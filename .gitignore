@@ -1,0 +1,13 @@
+# Ambientes Virtuais
+.venv/
+venv/
+env/
+
+# Arquivos temporários do Python
+__pycache__/
+*.pyc
+
+# Se for compilar para .exe depois
+build/
+dist/
+*.spec
