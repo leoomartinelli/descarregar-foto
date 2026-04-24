@@ -72,7 +72,7 @@ Clone o repositório:
 
 Instale as dependências:
 
-    pip install customtkinter psutil rawpy imageio
+    pip install -r requirements.txt
 
 ---
 
