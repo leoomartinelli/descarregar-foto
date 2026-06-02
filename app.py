@@ -2,6 +2,7 @@ import customtkinter as ctk
 from tkinter import filedialog, messagebox
 import os
 import json
+from datetime import date
 import shutil
 import threading
 import time
@@ -496,15 +497,28 @@ class ConfiguradorDriveWindow(ctk.CTkToplevel):
         if os.path.exists(self.caminho_config):
             try:
                 with open(self.caminho_config, 'r', encoding='utf-8') as f:
-                    return json.load(f)
+                    dados = json.load(f)
+                    if isinstance(dados, dict) and "data" in dados and "pastas" in dados:
+                        hoje = date.today().isoformat()
+                        if dados["data"] == hoje:
+                            return dados["pastas"]
+                        else:
+                            return []
+                    elif isinstance(dados, list):
+                        return []
             except Exception as e:
                 print(f"Erro ao carregar JSON: {e}")
         return []
 
     def salvar_config(self):
         try:
+            hoje = date.today().isoformat()
+            dados = {
+                "data": hoje,
+                "pastas": self.pastas
+            }
             with open(self.caminho_config, 'w', encoding='utf-8') as f:
-                json.dump(self.pastas, f, indent=4, ensure_ascii=False)
+                json.dump(dados, f, indent=4, ensure_ascii=False)
             return True
         except Exception as e:
             messagebox.showerror("Erro", f"Não foi possível salvar as configurações: {e}")
@@ -720,7 +734,11 @@ class ImportadorFotosApp(ctk.CTk):
         if os.path.exists(self.caminho_config_pastas):
             try:
                 with open(self.caminho_config_pastas, 'r', encoding='utf-8') as f:
-                    return json.load(f)
+                    dados = json.load(f)
+                    if isinstance(dados, dict) and "data" in dados and "pastas" in dados:
+                        hoje = date.today().isoformat()
+                        if dados["data"] == hoje:
+                            return dados["pastas"]
             except Exception as e:
                 print(f"Erro ao carregar pastas do Drive: {e}")
         return []
