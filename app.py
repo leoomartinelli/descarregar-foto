@@ -12,6 +12,18 @@ import imageio
 import concurrent.futures
 from PIL import Image, ImageOps
 
+try:
+    from google.auth.transport.requests import Request
+    from google.oauth2.credentials import Credentials
+    from google_auth_oauthlib.flow import InstalledAppFlow
+    from googleapiclient.discovery import build
+    from googleapiclient.errors import HttpError
+    from googleapiclient.http import MediaFileUpload
+    GOOGLE_DRIVE_DISPONIVEL = True
+except ImportError:
+    GOOGLE_DRIVE_DISPONIVEL = False
+
+
 # Configurações de tema do CustomTkinter
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
@@ -424,6 +436,14 @@ class RevisorFotosWindow(ctk.CTkToplevel):
         self.grab_release()
         self.destroy()
         
+        # Garante que os botões na janela principal sejam reativados corretamente
+        self.parent.btn_selecionar.configure(state="normal")
+        self.parent.btn_abrir.configure(state="normal")
+        if self.parent.arquivos_transferidos:
+            self.parent.btn_enviar_drive.configure(state="normal")
+        else:
+            self.parent.btn_enviar_drive.configure(state="disabled")
+
         # Abre a pasta contendo as fotos finais selecionadas
         self.parent.abrir_pasta()
 
@@ -441,6 +461,8 @@ class RevisorFotosWindow(ctk.CTkToplevel):
             self.limpar_eventos_globais()
             self.parent.btn_selecionar.configure(state="normal")
             self.parent.btn_abrir.configure(state="normal")
+            if self.parent.arquivos_transferidos:
+                self.parent.btn_enviar_drive.configure(state="normal")
             self.grab_release()
             self.destroy()
 
@@ -450,7 +472,7 @@ class ImportadorFotosApp(ctk.CTk):
         super().__init__()
 
         self.title("Descarregador de Fotos - Ministério")
-        self.geometry("600x720")
+        self.geometry("600x780")
         self.resizable(False, False)
 
         self.destino_path = ctk.StringVar()
@@ -564,6 +586,19 @@ class ImportadorFotosApp(ctk.CTk):
             state="disabled"
         )
         self.btn_abrir.pack(side="right", fill="x", expand=True)
+
+        # Botão para enviar as fotos selecionadas para o Google Drive
+        self.btn_enviar_drive = ctk.CTkButton(
+            self, 
+            text="📤 Enviar Fotos Selecionadas para o Google Drive", 
+            height=45, 
+            font=ctk.CTkFont(size=14, weight="bold"), 
+            fg_color="#4285F4", 
+            hover_color="#357ae8", 
+            command=self.iniciar_upload_drive, 
+            state="disabled"
+        )
+        self.btn_enviar_drive.pack(pady=(5, 20), padx=40, fill="x")
 
     def monitorar_cartao(self):
         drives_iniciais = [p.device for p in psutil.disk_partitions()]
@@ -767,6 +802,7 @@ class ImportadorFotosApp(ctk.CTk):
         total_fotos = len(self.arquivos_transferidos)
         if total_fotos > 0:
             self.btn_selecionar.configure(state="normal")
+            self.btn_enviar_drive.configure(state="normal")
             
             # Pergunta se o usuário gostaria de abrir o painel de seleção diretamente
             revisar = messagebox.askyesno(
@@ -777,6 +813,7 @@ class ImportadorFotosApp(ctk.CTk):
             if revisar:
                 self.abrir_revisor()
         else:
+            self.btn_enviar_drive.configure(state="disabled")
             messagebox.showinfo("Concluído", "A cópia foi finalizada, mas nenhuma imagem compatível com revisão foi transferida.")
 
     def abrir_revisor(self):
@@ -799,6 +836,181 @@ class ImportadorFotosApp(ctk.CTk):
                 subprocess.Popen(["open", destino])
             else:
                 subprocess.Popen(["xdg-open", destino])
+
+    def iniciar_upload_drive(self):
+        if not GOOGLE_DRIVE_DISPONIVEL:
+            messagebox.showerror(
+                "Bibliotecas Faltando", 
+                "As bibliotecas da API do Google Drive não estão disponíveis.\n\n"
+                "Por favor, execute: pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib"
+            )
+            return
+
+        if not self.arquivos_transferidos:
+            messagebox.showwarning("Aviso", "Não há fotos disponíveis para upload!")
+            return
+
+        nome_fotografo = self.entry_nome.get().strip()
+        if not nome_fotografo:
+            messagebox.showwarning("Aviso", "Por favor, preencha o nome do fotógrafo para organizar a pasta no Google Drive!")
+            return
+
+        caminho_credenciais = os.path.join(os.path.dirname(os.path.abspath(__file__)), "credentials.json")
+        if not os.path.exists(caminho_credenciais):
+            messagebox.showerror(
+                "Credenciais Não Encontradas", 
+                "O arquivo 'credentials.json' não foi encontrado na pasta do aplicativo!\n\n"
+                "Por favor, siga o guia 'google_drive_credentials_guide.md' para gerar "
+                "suas credenciais e salve o arquivo como 'credentials.json' na pasta do programa."
+            )
+            return
+
+        # Desabilita botões para evitar ações concorrentes durante o upload
+        self.btn_iniciar.configure(state="disabled")
+        self.btn_selecionar.configure(state="disabled")
+        self.btn_abrir.configure(state="disabled")
+        self.btn_enviar_drive.configure(state="disabled")
+        self.btn_manual.configure(state="disabled")
+
+        # Inicia a thread de upload em segundo plano para não travar a UI
+        thread_upload = threading.Thread(
+            target=self.processar_upload_drive, 
+            args=(nome_fotografo, caminho_credenciais), 
+            daemon=True
+        )
+        thread_upload.start()
+
+    def processar_upload_drive(self, nome_fotografo, caminho_credenciais):
+        SCOPES = ['https://www.googleapis.com/auth/drive']
+        token_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'token.json')
+        creds = None
+        
+        # Carrega o token.json se existir e for válido
+        if os.path.exists(token_path):
+            try:
+                creds = Credentials.from_authorized_user_file(token_path, SCOPES)
+            except Exception as e:
+                print(f"Erro ao carregar token.json: {e}")
+                creds = None
+
+        # Se não houver credenciais válidas, realiza o login
+        if not creds or not creds.valid:
+            if creds and creds.expired and creds.refresh_token:
+                try:
+                    self.after(0, lambda: self.lbl_progresso.configure(text="Atualizando acesso com o Google..."))
+                    creds.refresh(Request())
+                except Exception:
+                    creds = None
+            
+            if not creds:
+                # UX: Avisa o usuário que abrirá o navegador antes que a janela surja
+                self.after(0, lambda: messagebox.showinfo(
+                    "Autenticação do Google", 
+                    "Uma janela do seu navegador de internet será aberta para que você faça login com sua conta do Google "
+                    "e conceda acesso para o aplicativo enviar as fotos.\n\n"
+                    "Por favor, confirme a autorização no seu navegador."
+                ))
+                try:
+                    self.after(0, lambda: self.lbl_progresso.configure(text="Aguardando autorização no navegador..."))
+                    flow = InstalledAppFlow.from_client_secrets_file(caminho_credenciais, SCOPES)
+                    creds = flow.run_local_server(port=0)
+                    
+                    # Salva as credenciais para evitar logins futuros
+                    with open(token_path, 'w') as token_file:
+                        token_file.write(creds.to_json())
+                except Exception as e:
+                    self.after(0, lambda: messagebox.showerror("Erro de Autenticação", f"Não foi possível autenticar: {e}"))
+                    self.after(0, self.finalizar_upload_gui)
+                    return
+
+        try:
+            self.after(0, lambda: self.lbl_progresso.configure(text="Conectando ao Google Drive..."))
+            service = build('drive', 'v3', credentials=creds)
+
+            # Define o nome para a pasta organizada
+            nome_pasta_drive = f"Fotos - {nome_fotografo} - {time.strftime('%d-%m-%Y')}"
+            self.after(0, lambda: self.lbl_progresso.configure(text=f"Criando pasta '{nome_pasta_drive}' no Drive..."))
+            
+            folder_metadata = {
+                'name': nome_pasta_drive,
+                'mimeType': 'application/vnd.google-apps.folder'
+            }
+            folder = service.files().create(body=folder_metadata, fields='id').execute()
+            folder_id = folder.get('id')
+
+            arquivos_para_enviar = self.arquivos_transferidos.copy()
+            total_arquivos = len(arquivos_para_enviar)
+            progresso_atual = 0
+
+            for caminho_arquivo in arquivos_para_enviar:
+                if not os.path.exists(caminho_arquivo):
+                    progresso_atual += 1
+                    continue
+                
+                nome_arquivo = os.path.basename(caminho_arquivo)
+                self.after(0, lambda n=nome_arquivo, p=progresso_atual+1, t=total_arquivos: self.lbl_progresso.configure(
+                    text=f"Enviando ({p}/{t}): {n}"
+                ))
+                
+                file_metadata = {
+                    'name': nome_arquivo,
+                    'parents': [folder_id]
+                }
+                
+                # Determina o MIME type com base na extensão
+                ext = os.path.splitext(nome_arquivo)[1].lower()
+                if ext in ['.jpg', '.jpeg']:
+                    mime = 'image/jpeg'
+                elif ext == '.png':
+                    mime = 'image/png'
+                elif ext in ['.cr2', '.nef', '.arw']:
+                    mime = 'image/x-raw'
+                elif ext == '.mp4':
+                    mime = 'video/mp4'
+                else:
+                    mime = 'application/octet-stream'
+
+                try:
+                    # Envio com MediaFileUpload resumable para suportar fotos pesadas e acompanhar progresso fino
+                    media = MediaFileUpload(caminho_arquivo, mimetype=mime, resumable=True)
+                    request = service.files().create(body=file_metadata, media_body=media, fields='id')
+                    
+                    response = None
+                    while response is None:
+                        status, response = request.next_chunk()
+                        if status:
+                            percentual_arquivo = int(status.progress() * 100)
+                            self.after(0, lambda n=nome_arquivo, p=progresso_atual+1, t=total_arquivos, pct=percentual_arquivo: 
+                                self.lbl_progresso.configure(text=f"Enviando ({p}/{t}): {n} ({pct}%)")
+                            )
+                            # Atualiza a barra de progresso do CustomTkinter dinamicamente
+                            progresso_frac = (progresso_atual + status.progress()) / total_arquivos
+                            self.after(0, lambda pf=progresso_frac: self.progressbar.set(pf))
+                except Exception as e:
+                    print(f"Erro ao enviar arquivo {nome_arquivo}: {e}")
+
+                progresso_atual += 1
+                progresso_geral = progresso_atual / total_arquivos
+                self.after(0, lambda pg=progresso_geral: self.progressbar.set(pg))
+
+            self.after(0, lambda: messagebox.showinfo(
+                "Upload Concluído", 
+                f"Sucesso! {total_arquivos} fotos foram enviadas com sucesso para a pasta '{nome_pasta_drive}' no seu Google Drive!"
+            ))
+
+        except Exception as e:
+            self.after(0, lambda: messagebox.showerror("Erro de Upload", f"Erro durante o envio para o Google Drive: {e}"))
+
+        self.after(0, self.finalizar_upload_gui)
+
+    def finalizar_upload_gui(self):
+        self.btn_iniciar.configure(state="normal")
+        self.btn_selecionar.configure(state="normal")
+        self.btn_abrir.configure(state="normal")
+        self.btn_enviar_drive.configure(state="normal")
+        self.btn_manual.configure(state="normal")
+        self.progressbar.set(0)
+        self.lbl_progresso.configure(text="Progresso: 0%")
 
 if __name__ == "__main__":
     app = ImportadorFotosApp()
