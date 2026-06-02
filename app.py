@@ -10,10 +10,440 @@ import subprocess
 import rawpy
 import imageio
 import concurrent.futures
+from PIL import Image, ImageOps
 
 # Configurações de tema do CustomTkinter
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
+
+class RevisorFotosWindow(ctk.CTkToplevel):
+    def __init__(self, parent, arquivos, pasta_destino):
+        super().__init__(parent)
+        self.parent = parent
+        self.arquivos_originais = arquivos.copy() # Lista imutável original
+        self.arquivos = arquivos.copy()           # Lista ativa de fotos sendo revisadas
+        self.descartados = []                     # Pilha de fotos descartadas (para Desfazer)
+        self.pasta_destino = pasta_destino
+        
+        self.current_index = 0
+        
+        self.title("Revisar e Selecionar Fotos")
+        self.geometry("1100x750")
+        self.minsize(800, 600)
+        
+        # Garante foco e captura de eventos na janela de revisão
+        self.focus_force()
+        self.grab_set()
+        self.after(200, self.focus_force)
+        
+        # Maximiza a janela após carregar para visualização otimizada
+        self.after(150, self.maximizar_janela)
+        
+        # Caching thread-safe para imagens
+        self.cache_imagens = {} # caminho -> PIL.Image
+        self.lock_cache = threading.Lock()
+        
+        self.setup_ui()
+        self.bind_events()
+        
+        # Inicia a thread de pré-carregamento em segundo plano (otimização máxima)
+        self.threading_preload = threading.Thread(target=self.preload_loop, daemon=True)
+        self.threading_preload.start()
+        
+        # Exibe a primeira foto
+        self.exibir_foto_atual()
+
+    def maximizar_janela(self):
+        try:
+            if platform.system() == "Windows":
+                self.state("zoomed")
+            else:
+                self.attributes("-zoomed", True)
+        except Exception:
+            pass
+
+    def setup_ui(self):
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_columnconfigure(0, weight=1)
+        
+        # Container principal
+        self.main_container = ctk.CTkFrame(self)
+        self.main_container.grid(row=0, column=0, sticky="nsew", padx=15, pady=15)
+        
+        self.main_container.grid_rowconfigure(0, weight=1) # Área da foto
+        self.main_container.grid_rowconfigure(1, weight=0) # Barra de ferramentas e status
+        self.main_container.grid_columnconfigure(0, weight=1)
+        
+        # Área de exibição de foto (fundo escuro para destacar a foto)
+        self.frame_foto = ctk.CTkFrame(self.main_container, fg_color="#0d0d0d")
+        self.frame_foto.grid(row=0, column=0, sticky="nsew", padx=15, pady=(15, 10))
+        
+        self.lbl_foto = ctk.CTkLabel(self.frame_foto, text="Carregando imagem...", font=ctk.CTkFont(size=16), text_color="gray")
+        self.lbl_foto.pack(fill="both", expand=True)
+        
+        # Evento de redimensionamento dinâmico (com debounce automático)
+        self.frame_foto.bind("<Configure>", self.ao_redimensionar)
+        
+        # Barra de ferramentas na parte inferior
+        self.frame_controles = ctk.CTkFrame(self.main_container, height=80)
+        self.frame_controles.grid(row=1, column=0, sticky="ew", padx=15, pady=(5, 15))
+        
+        self.frame_controles.grid_rowconfigure(0, weight=1)
+        for i in range(6):
+            self.frame_controles.grid_columnconfigure(i, weight=1)
+            
+        # 1. Botão Anterior
+        self.btn_anterior = ctk.CTkButton(
+            self.frame_controles, 
+            text="◀ Anterior (Seta Esquerda)", 
+            font=ctk.CTkFont(size=13),
+            command=self.foto_anterior
+        )
+        self.btn_anterior.grid(row=0, column=0, padx=8, pady=12, sticky="ew")
+        
+        # 2. Botão Desfazer
+        self.btn_desfazer = ctk.CTkButton(
+            self.frame_controles, 
+            text="↩️ Desfazer (Ctrl+Z)", 
+            fg_color="#34495e", 
+            hover_color="#2c3e50",
+            state="disabled",
+            font=ctk.CTkFont(size=13),
+            command=self.desfazer_descarte
+        )
+        self.btn_desfazer.grid(row=0, column=1, padx=8, pady=12, sticky="ew")
+        
+        # 3. Botão Apagar/Descartar (Vermelho em destaque)
+        self.btn_descartar = ctk.CTkButton(
+            self.frame_controles, 
+            text="🗑️ Apagar Foto (Delete)", 
+            fg_color="#e74c3c", 
+            hover_color="#c0392b",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            command=self.descartar_foto
+        )
+        self.btn_descartar.grid(row=0, column=2, padx=8, pady=12, sticky="ew")
+        
+        # 4. Botão Próxima
+        self.btn_proxima = ctk.CTkButton(
+            self.frame_controles, 
+            text="Próxima ▶ (Seta Direita)", 
+            font=ctk.CTkFont(size=13),
+            command=self.proxima_foto
+        )
+        self.btn_proxima.grid(row=0, column=3, padx=8, pady=12, sticky="ew")
+        
+        # 5. Label de Status da Revisão
+        self.lbl_revisao_status = ctk.CTkLabel(
+            self.frame_controles, 
+            text="Foto 0/0", 
+            font=ctk.CTkFont(size=13, weight="bold"),
+            text_color="#3498db"
+        )
+        self.lbl_revisao_status.grid(row=0, column=4, padx=8, pady=12)
+        
+        # 6. Botão Finalizar (Verde em destaque)
+        self.btn_finalizar = ctk.CTkButton(
+            self.frame_controles, 
+            text="💾 Finalizar Seleção", 
+            fg_color="#2ecc71", 
+            hover_color="#27ae60",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            command=self.finalizar_revisao
+        )
+        self.btn_finalizar.grid(row=0, column=5, padx=8, pady=12, sticky="ew")
+
+    def bind_events(self):
+        # Vincula os atalhos recursivamente em todos os widgets (garante 100% de funcionamento independente de onde está o foco)
+        self.bind_keys_recursive(self)
+        self.protocol("WM_DELETE_WINDOW", self.ao_fechar_janela)
+
+    def bind_keys_recursive(self, widget):
+        widget.bind("<Left>", lambda e: self.foto_anterior())
+        widget.bind("<Right>", lambda e: self.proxima_foto())
+        widget.bind("<Delete>", lambda e: self.descartar_foto())
+        widget.bind("<BackSpace>", lambda e: self.descartar_foto())
+        widget.bind("<Control-z>", lambda e: self.desfazer_descarte())
+        widget.bind("<Control-Z>", lambda e: self.desfazer_descarte())
+        
+        for child in widget.winfo_children():
+            self.bind_keys_recursive(child)
+
+    def limpar_eventos_globais(self):
+        pass
+
+    def preload_loop(self):
+        """Thread de pré-carregamento contínuo em segundo plano para suavidade total ao alternar fotos."""
+        while True:
+            if not self.arquivos:
+                time.sleep(0.5)
+                continue
+                
+            idx_atual = self.current_index
+            paths_to_load = []
+            
+            # Prioridade de pré-carregamento: Atual, Próxima, Anterior, Duas à frente
+            if idx_atual < len(self.arquivos):
+                paths_to_load.append(self.arquivos[idx_atual])
+            if idx_atual + 1 < len(self.arquivos):
+                paths_to_load.append(self.arquivos[idx_atual + 1])
+            if idx_atual - 1 >= 0:
+                paths_to_load.append(self.arquivos[idx_atual - 1])
+            if idx_atual + 2 < len(self.arquivos):
+                paths_to_load.append(self.arquivos[idx_atual + 2])
+                
+            for path in paths_to_load:
+                with self.lock_cache:
+                    in_cache = path in self.cache_imagens
+                
+                if not in_cache:
+                    try:
+                        ext = os.path.splitext(path)[1].lower()
+                        if ext in ['.cr2', '.nef', '.arw']:
+                            with rawpy.imread(path) as raw:
+                                # half_size=True é 4 vezes mais rápido e perfeito para renderizar na tela
+                                rgb = raw.postprocess(use_camera_wb=True, half_size=True)
+                                img_pil = Image.fromarray(rgb)
+                        else:
+                            img_pil = Image.open(path)
+                            img_pil = ImageOps.exif_transpose(img_pil)
+                            img_pil.load() # Força a decodificação em segundo plano
+                            
+                        with self.lock_cache:
+                            # Mantém o cache compacto (limite de 12 imagens) para evitar consumo excessivo de RAM
+                            if len(self.cache_imagens) > 12:
+                                for cached_path in list(self.cache_imagens.keys()):
+                                    if cached_path not in self.arquivos:
+                                        self.cache_imagens.pop(cached_path, None)
+                                    else:
+                                        try:
+                                            distancia = abs(self.arquivos.index(cached_path) - idx_atual)
+                                            if distancia > 4:
+                                                self.cache_imagens.pop(cached_path, None)
+                                        except ValueError:
+                                            self.cache_imagens.pop(cached_path, None)
+                                            
+                            self.cache_imagens[path] = img_pil
+                    except Exception as e:
+                        print(f"Erro ao pré-carregar {path}: {e}")
+                        
+            time.sleep(0.1)
+
+    def obter_imagem_pil(self, path):
+        with self.lock_cache:
+            if path in self.cache_imagens:
+                return self.cache_imagens[path]
+                
+        # Fallback síncrono caso a thread ainda não tenha carregado
+        try:
+            ext = os.path.splitext(path)[1].lower()
+            if ext in ['.cr2', '.nef', '.arw']:
+                with rawpy.imread(path) as raw:
+                    rgb = raw.postprocess(use_camera_wb=True, half_size=True)
+                    img_pil = Image.fromarray(rgb)
+            else:
+                img_pil = Image.open(path)
+                img_pil = ImageOps.exif_transpose(img_pil)
+                img_pil.load()
+            
+            with self.lock_cache:
+                self.cache_imagens[path] = img_pil
+            return img_pil
+        except Exception as e:
+            print(f"Erro ao carregar imagem: {e}")
+            return None
+
+    def redimensionar_para_caber(self, img_pil, largura_alvo, altura_alvo):
+        if largura_alvo <= 10 or altura_alvo <= 10:
+            return None
+            
+        largura_orig, altura_orig = img_pil.size
+        ratio = min(largura_alvo / largura_orig, altura_alvo / altura_orig)
+        
+        nova_largura = int(largura_orig * ratio)
+        nova_altura = int(altura_orig * ratio)
+        
+        if nova_largura <= 0 or nova_altura <= 0:
+            return None
+            
+        # Otimizado com HAMMING para velocidade e excelente nitidez
+        try:
+            from PIL.Image import Resampling
+            resample_mode = Resampling.HAMMING
+        except ImportError:
+            resample_mode = Image.ANTIALIAS if hasattr(Image, "ANTIALIAS") else 2
+            
+        return img_pil.resize((nova_largura, nova_altura), resample_mode)
+
+    def exibir_foto_atual(self):
+        if not self.arquivos:
+            self.lbl_foto.configure(image=None, text="Nenhuma foto para exibir.\n\nTodas as fotos foram descartadas ou revisadas!\nClique em 'Finalizar Seleção' para salvar.", font=ctk.CTkFont(size=16))
+            self.lbl_revisao_status.configure(text="0 de 0")
+            self.btn_descartar.configure(state="disabled")
+            self.btn_proxima.configure(state="disabled")
+            self.btn_anterior.configure(state="disabled")
+            return
+            
+        if self.current_index >= len(self.arquivos):
+            self.current_index = len(self.arquivos) - 1
+        if self.current_index < 0:
+            self.current_index = 0
+            
+        path_atual = self.arquivos[self.current_index]
+        nome_arquivo = os.path.basename(path_atual)
+        
+        self.lbl_revisao_status.configure(text=f"Foto {self.current_index + 1}/{len(self.arquivos)}\n{nome_arquivo}")
+        
+        self.btn_anterior.configure(state="normal" if self.current_index > 0 else "disabled")
+        self.btn_proxima.configure(state="normal" if self.current_index < len(self.arquivos) - 1 else "disabled")
+        self.btn_descartar.configure(state="normal")
+        self.btn_desfazer.configure(state="normal" if self.descartados else "disabled")
+        
+        self.atualizar_canvas_imagem()
+
+    def ao_redimensionar(self, event):
+        """Usa debounce de 50ms para evitar travamento da UI ao arrastar a janela."""
+        if hasattr(self, "_resize_after_id"):
+            self.after_cancel(self._resize_after_id)
+        self._resize_after_id = self.after(50, self.atualizar_canvas_imagem)
+
+    def atualizar_canvas_imagem(self):
+        if not self.arquivos or self.current_index >= len(self.arquivos):
+            return
+            
+        path_atual = self.arquivos[self.current_index]
+        img_pil = self.obter_imagem_pil(path_atual)
+        
+        if not img_pil:
+            self.lbl_foto.configure(image=None, text="Erro ao exibir imagem.")
+            return
+            
+        largura_alvo = self.frame_foto.winfo_width()
+        altura_alvo = self.frame_foto.winfo_height()
+        
+        # Garante valores padrões se a janela não tiver sido renderizada ainda
+        if largura_alvo <= 10: largura_alvo = 900
+        if altura_alvo <= 10: altura_alvo = 600
+        
+        img_scaled = self.redimensionar_para_caber(img_pil, largura_alvo - 20, altura_alvo - 20)
+        
+        if img_scaled:
+            self.ctk_img = ctk.CTkImage(
+                light_image=img_scaled, 
+                dark_image=img_scaled, 
+                size=(img_scaled.width, img_scaled.height)
+            )
+            self.lbl_foto.configure(image=self.ctk_img, text="")
+
+    def foto_anterior(self):
+        if self.current_index > 0:
+            self.current_index -= 1
+            self.exibir_foto_atual()
+
+    def proxima_foto(self):
+        if self.current_index < len(self.arquivos) - 1:
+            self.current_index += 1
+            self.exibir_foto_atual()
+
+    def descartar_foto(self):
+        if not self.arquivos:
+            return
+            
+        path_atual = self.arquivos[self.current_index]
+        self.arquivos.remove(path_atual)
+        self.descartados.append(path_atual)
+        
+        self.btn_desfazer.configure(state="normal")
+        
+        if not self.arquivos:
+            self.exibir_foto_atual()
+            return
+            
+        if self.current_index >= len(self.arquivos):
+            self.current_index = len(self.arquivos) - 1
+            
+        self.exibir_foto_atual()
+
+    def desfazer_descarte(self):
+        if not self.descartados:
+            return
+            
+        recovered_path = self.descartados.pop()
+        
+        # Encontra a posição original relativa na lista
+        orig_idx = self.arquivos_originais.index(recovered_path)
+        
+        insert_idx = 0
+        for i, active_path in enumerate(self.arquivos):
+            active_orig_idx = self.arquivos_originais.index(active_path)
+            if active_orig_idx > orig_idx:
+                insert_idx = i
+                break
+        else:
+            insert_idx = len(self.arquivos)
+            
+        self.arquivos.insert(insert_idx, recovered_path)
+        self.current_index = insert_idx
+        
+        self.btn_desfazer.configure(state="normal" if self.descartados else "disabled")
+        self.exibir_foto_atual()
+
+    def finalizar_revisao(self):
+        total_descartados = len(self.descartados)
+        if total_descartados > 0:
+            confirmar = messagebox.askyesno(
+                "Confirmar Exclusão", 
+                f"Você marcou {total_descartados} foto(s) para exclusão.\n\n"
+                "Elas serão apagadas permanentemente do computador.\n"
+                "Deseja continuar?"
+            )
+            if not confirmar:
+                return
+                
+            sucessos = 0
+            erros = 0
+            for path in self.descartados:
+                try:
+                    if os.path.exists(path):
+                        os.remove(path)
+                        sucessos += 1
+                except Exception as e:
+                    print(f"Erro ao deletar {path}: {e}")
+                    erros += 1
+            
+            self.parent.arquivos_transferidos = self.arquivos.copy()
+            
+            mensagem = f"Limpeza concluída! {sucessos} foto(s) foram apagadas."
+            if erros > 0:
+                mensagem += f"\n(Erro ao apagar {erros} foto(s).)"
+            messagebox.showinfo("Sucesso", mensagem)
+        else:
+            messagebox.showinfo("Concluído", "Revisão terminada! Nenhuma foto foi apagada.")
+            
+        self.limpar_eventos_globais()
+        self.grab_release()
+        self.destroy()
+        
+        # Abre a pasta contendo as fotos finais selecionadas
+        self.parent.abrir_pasta()
+
+    def ao_fechar_janela(self):
+        resposta = messagebox.askyesnocancel(
+            "Finalizar Seleção", 
+            "Deseja salvar suas escolhas e finalizar a revisão?\n\n"
+            "- 'Sim': Aplica as exclusões permanentemente e abre a pasta.\n"
+            "- 'Não': Fecha sem salvar (mantém todas as fotos no computador).\n"
+            "- 'Cancelar': Continua na tela de revisão de fotos."
+        )
+        if resposta is True:
+            self.finalizar_revisao()
+        elif resposta is False:
+            self.limpar_eventos_globais()
+            self.parent.btn_selecionar.configure(state="normal")
+            self.parent.btn_abrir.configure(state="normal")
+            self.grab_release()
+            self.destroy()
+
 
 class ImportadorFotosApp(ctk.CTk):
     def __init__(self):
@@ -25,8 +455,10 @@ class ImportadorFotosApp(ctk.CTk):
 
         self.destino_path = ctk.StringVar()
         self.cartao_detectado = False
+        self.origem_manual = False      # Flag para indicar seleção manual de pasta
         self.drive_path = ""
         self.checkboxes_pastas = []
+        self.arquivos_transferidos = [] # Guarda o caminho de todas as fotos transferidas com sucesso
         
         self.setup_ui()
         
@@ -45,8 +477,23 @@ class ImportadorFotosApp(ctk.CTk):
         self.entry_nome = ctk.CTkEntry(self, width=520, placeholder_text="Ex: JoaoSilva")
         self.entry_nome.pack(pady=(0, 15), padx=40)
 
-        self.lbl_pastas = ctk.CTkLabel(self, text="Pastas no Cartão SD:")
-        self.lbl_pastas.pack(anchor="w", padx=40)
+        # Container para a label e o botão de seleção manual
+        self.frame_lbl_pastas = ctk.CTkFrame(self, fg_color="transparent")
+        self.frame_lbl_pastas.pack(fill="x", padx=40, pady=(0, 5))
+
+        self.lbl_pastas = ctk.CTkLabel(self.frame_lbl_pastas, text="Pastas no Cartão SD:")
+        self.lbl_pastas.pack(side="left")
+
+        self.btn_manual = ctk.CTkButton(
+            self.frame_lbl_pastas, 
+            text="📂 Origem Manual", 
+            height=26, 
+            font=ctk.CTkFont(size=12, weight="bold"),
+            fg_color="#34495e",
+            hover_color="#2c3e50",
+            command=self.selecionar_origem_manual
+        )
+        self.btn_manual.pack(side="right")
         
         self.frame_pastas = ctk.CTkScrollableFrame(self, width=500, height=120)
         self.frame_pastas.pack(pady=(0, 15), padx=40)
@@ -77,13 +524,45 @@ class ImportadorFotosApp(ctk.CTk):
         self.progressbar.pack(pady=(5, 20), padx=40)
         self.progressbar.set(0)
 
+        # Botão principal de transferência
         self.frame_botoes = ctk.CTkFrame(self, fg_color="transparent")
-        self.frame_botoes.pack(pady=(10, 20), padx=40, fill="x")
+        self.frame_botoes.pack(pady=(10, 5), padx=40, fill="x")
 
-        self.btn_iniciar = ctk.CTkButton(self.frame_botoes, text="Iniciar Transferência", font=ctk.CTkFont(size=15, weight="bold"), height=45, fg_color="green", hover_color="darkgreen", command=self.iniciar_transferencia)
-        self.btn_iniciar.pack(side="left", fill="x", expand=True, padx=(0, 10))
+        self.btn_iniciar = ctk.CTkButton(
+            self.frame_botoes, 
+            text="Iniciar Transferência", 
+            font=ctk.CTkFont(size=15, weight="bold"), 
+            height=45, 
+            fg_color="green", 
+            hover_color="darkgreen", 
+            command=self.iniciar_transferencia
+        )
+        self.btn_iniciar.pack(fill="x", expand=True)
 
-        self.btn_abrir = ctk.CTkButton(self.frame_botoes, text="Abrir Pasta", height=45, font=ctk.CTkFont(size=14), command=self.abrir_pasta, state="disabled")
+        # Botões secundários posicionados lado a lado abaixo da transferência
+        self.frame_botoes_secundarios = ctk.CTkFrame(self, fg_color="transparent")
+        self.frame_botoes_secundarios.pack(pady=(5, 20), padx=40, fill="x")
+
+        self.btn_selecionar = ctk.CTkButton(
+            self.frame_botoes_secundarios, 
+            text="🔍 Selecionar / Revisar Fotos", 
+            height=45, 
+            font=ctk.CTkFont(size=14, weight="bold"), 
+            fg_color="#1f538d", 
+            hover_color="#14375e", 
+            command=self.abrir_revisor, 
+            state="disabled"
+        )
+        self.btn_selecionar.pack(side="left", fill="x", expand=True, padx=(0, 10))
+
+        self.btn_abrir = ctk.CTkButton(
+            self.frame_botoes_secundarios, 
+            text="📁 Abrir Pasta", 
+            height=45, 
+            font=ctk.CTkFont(size=14), 
+            command=self.abrir_pasta, 
+            state="disabled"
+        )
         self.btn_abrir.pack(side="right", fill="x", expand=True)
 
     def monitorar_cartao(self):
@@ -95,22 +574,53 @@ class ImportadorFotosApp(ctk.CTk):
             if novos_drives:
                 self.drive_path = novos_drives[0]
                 self.cartao_detectado = True
+                self.origem_manual = False
                 self.atualizar_ui_cartao_detectado(self.drive_path)
                 drives_iniciais = drives_atuais
             elif len(drives_atuais) < len(drives_iniciais):
-                self.drive_path = ""
-                self.cartao_detectado = False
-                self.atualizar_ui_cartao_removido()
-                drives_iniciais = drives_atuais
+                # Se o usuário escolheu uma origem manual, ignoramos a remoção de outros drives
+                if self.origem_manual:
+                    drives_iniciais = drives_atuais
+                else:
+                    self.drive_path = ""
+                    self.cartao_detectado = False
+                    self.atualizar_ui_cartao_removido()
+                    drives_iniciais = drives_atuais
 
-    def atualizar_ui_cartao_detectado(self, drive):
-        self.lbl_status.configure(text=f"Cartão Detectado: {drive}", text_color="lightgreen")
+    def selecionar_origem_manual(self):
+        pasta = filedialog.askdirectory(title="Selecione a pasta de origem das fotos (Cartão ou Pasta)")
+        if pasta:
+            self.drive_path = pasta
+            self.cartao_detectado = True
+            self.origem_manual = True
+            self.atualizar_ui_cartao_detectado(pasta, e_manual=True)
+
+    def atualizar_ui_cartao_detectado(self, drive, e_manual=False):
+        if e_manual:
+            self.lbl_status.configure(text=f"Origem Manual Selecionada: {drive}", text_color="#3498db")
+        else:
+            self.lbl_status.configure(text=f"Cartão Detectado: {drive}", text_color="lightgreen")
+            
         for widget in self.frame_pastas.winfo_children():
             widget.destroy()
         self.checkboxes_pastas.clear()
         
         try:
             pastas_encontradas = []
+            
+            # Opção de importar a pasta raiz inteira de forma direta
+            var_raiz = ctk.StringVar(value="")
+            cb_raiz = ctk.CTkCheckBox(
+                self.frame_pastas, 
+                text="[Pasta Completa] Importar tudo desta pasta principal", 
+                variable=var_raiz, 
+                onvalue=".", 
+                offvalue="",
+                text_color="#3498db" if e_manual else "#2ecc71"
+            )
+            cb_raiz.pack(anchor="w", pady=5, padx=10)
+            self.checkboxes_pastas.append(var_raiz)
+            
             caminho_dcim = os.path.join(drive, "DCIM")
             
             if os.path.exists(caminho_dcim) and os.path.isdir(caminho_dcim):
@@ -129,10 +639,6 @@ class ImportadorFotosApp(ctk.CTk):
                 cb = ctk.CTkCheckBox(self.frame_pastas, text=pasta, variable=var, onvalue=pasta, offvalue="")
                 cb.pack(anchor="w", pady=5, padx=10)
                 self.checkboxes_pastas.append(var)
-                
-            if not pastas_encontradas:
-                lbl = ctk.CTkLabel(self.frame_pastas, text="Nenhuma pasta de fotos encontrada no cartão.")
-                lbl.pack(pady=20)
                 
         except Exception as e:
             print(f"Erro ao ler cartão: {e}")
@@ -171,9 +677,13 @@ class ImportadorFotosApp(ctk.CTk):
             return
 
         self.btn_iniciar.configure(state="disabled")
+        self.btn_selecionar.configure(state="disabled")
         self.btn_abrir.configure(state="disabled")
         
         converter = self.converter_raw_var.get()
+        
+        # Limpa os arquivos transferidos antes de uma nova importação
+        self.arquivos_transferidos.clear()
         
         thread_copia = threading.Thread(target=self.processar_copia, args=(nome_fotografo, destino, pastas_selecionadas, converter))
         thread_copia.start()
@@ -191,8 +701,8 @@ class ImportadorFotosApp(ctk.CTk):
 
         total_arquivos = len(arquivos_para_copiar)
         if total_arquivos == 0:
-            messagebox.showinfo("Informação", "Nenhuma imagem encontrada nas pastas selecionadas.")
-            self.btn_iniciar.configure(state="normal")
+            self.after(0, lambda: messagebox.showinfo("Informação", "Nenhuma imagem encontrada nas pastas selecionadas."))
+            self.after(0, lambda: self.btn_iniciar.configure(state="normal"))
             return
 
         progresso_atual = 0
@@ -226,10 +736,15 @@ class ImportadorFotosApp(ctk.CTk):
                 else:
                     # Cópia direta do arquivo
                     shutil.copy2(caminho_arquivo, caminho_destino)
+                
+                # Armazena os arquivos transferidos com sucesso de forma thread-safe
+                with lock:
+                    # Só adicionamos imagens legíveis (ignoramos vídeos no revisor se houver)
+                    if caminho_destino.lower().endswith(('.png', '.jpg', '.jpeg', '.cr2', '.nef', '.arw')):
+                        self.arquivos_transferidos.append(caminho_destino)
             except Exception as e:
                 print(f"Erro ao processar {nome_original}: {e}")
             
-            # Atualiza a interface de forma segura entre as threads
             with lock:
                 progresso_atual += 1
                 progresso = progresso_atual / total_arquivos
@@ -237,15 +752,43 @@ class ImportadorFotosApp(ctk.CTk):
                 self.progressbar.set(progresso)
                 self.lbl_progresso.configure(text=f"Progresso: {percentual}% ({progresso_atual}/{total_arquivos})")
 
-        # Roda o processamento dividindo a carga entre 4 núcleos simultaneamente
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
             executor.map(processar_arquivo, arquivos_para_copiar)
 
-        messagebox.showinfo("Sucesso", "Transferência finalizada!")
+        # Chama a finalização da transferência de forma segura na thread principal
+        self.after(0, self.finalizar_transferencia_gui)
+
+    def finalizar_transferencia_gui(self):
         self.btn_iniciar.configure(state="normal")
         self.btn_abrir.configure(state="normal")
         self.progressbar.set(0)
         self.lbl_progresso.configure(text="Progresso: 0%")
+        
+        total_fotos = len(self.arquivos_transferidos)
+        if total_fotos > 0:
+            self.btn_selecionar.configure(state="normal")
+            
+            # Pergunta se o usuário gostaria de abrir o painel de seleção diretamente
+            revisar = messagebox.askyesno(
+                "Transferência Finalizada",
+                f"Foram transferidas {total_fotos} foto(s) com sucesso!\n\n"
+                "Deseja iniciar a tela de seleção agora para revisar e apagar as fotos indesejadas?"
+            )
+            if revisar:
+                self.abrir_revisor()
+        else:
+            messagebox.showinfo("Concluído", "A cópia foi finalizada, mas nenhuma imagem compatível com revisão foi transferida.")
+
+    def abrir_revisor(self):
+        if not self.arquivos_transferidos:
+            messagebox.showwarning("Aviso", "Não há fotos na lista de transferência para revisar.")
+            return
+            
+        self.btn_selecionar.configure(state="disabled")
+        self.btn_abrir.configure(state="disabled")
+        
+        # Abre a tela de revisão
+        self.janela_revisao = RevisorFotosWindow(self, self.arquivos_transferidos, self.destino_path.get())
 
     def abrir_pasta(self):
         destino = self.destino_path.get()
