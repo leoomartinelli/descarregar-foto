@@ -472,8 +472,9 @@ class ImportadorFotosApp(ctk.CTk):
         super().__init__()
 
         self.title("Descarregador de Fotos - Ministério")
-        self.geometry("600x780")
-        self.resizable(False, False)
+        self.geometry("600x620")
+        self.resizable(True, True)
+        self.minsize(550, 500)
 
         self.destino_path = ctk.StringVar()
         self.cartao_detectado = False
@@ -488,20 +489,20 @@ class ImportadorFotosApp(ctk.CTk):
         self.monitor_thread.start()
 
     def setup_ui(self):
-        self.lbl_titulo = ctk.CTkLabel(self, text="Descarregador de Fotos", font=ctk.CTkFont(size=24, weight="bold"))
-        self.lbl_titulo.pack(pady=(20, 5))
+        self.lbl_titulo = ctk.CTkLabel(self, text="Descarregador de Fotos", font=ctk.CTkFont(size=20, weight="bold"))
+        self.lbl_titulo.pack(pady=(8, 1))
 
-        self.lbl_status = ctk.CTkLabel(self, text="Aguardando inserção do Cartão SD...", text_color="orange", font=ctk.CTkFont(size=14))
-        self.lbl_status.pack(pady=(0, 20))
+        self.lbl_status = ctk.CTkLabel(self, text="Aguardando inserção do Cartão SD...", text_color="orange", font=ctk.CTkFont(size=12))
+        self.lbl_status.pack(pady=(0, 4))
 
         self.lbl_nome = ctk.CTkLabel(self, text="Nome do Fotógrafo:")
         self.lbl_nome.pack(anchor="w", padx=40)
-        self.entry_nome = ctk.CTkEntry(self, width=520, placeholder_text="Ex: JoaoSilva")
-        self.entry_nome.pack(pady=(0, 15), padx=40)
+        self.entry_nome = ctk.CTkEntry(self, width=520, height=28, placeholder_text="Ex: JoaoSilva")
+        self.entry_nome.pack(pady=(0, 4), padx=40, fill="x")
 
         # Container para a label e o botão de seleção manual
         self.frame_lbl_pastas = ctk.CTkFrame(self, fg_color="transparent")
-        self.frame_lbl_pastas.pack(fill="x", padx=40, pady=(0, 5))
+        self.frame_lbl_pastas.pack(fill="x", padx=40, pady=(0, 2))
 
         self.lbl_pastas = ctk.CTkLabel(self.frame_lbl_pastas, text="Pastas no Cartão SD:")
         self.lbl_pastas.pack(side="left")
@@ -509,52 +510,52 @@ class ImportadorFotosApp(ctk.CTk):
         self.btn_manual = ctk.CTkButton(
             self.frame_lbl_pastas, 
             text="📂 Origem Manual", 
-            height=26, 
-            font=ctk.CTkFont(size=12, weight="bold"),
+            height=20, 
+            font=ctk.CTkFont(size=10, weight="bold"),
             fg_color="#34495e",
             hover_color="#2c3e50",
             command=self.selecionar_origem_manual
         )
         self.btn_manual.pack(side="right")
         
-        self.frame_pastas = ctk.CTkScrollableFrame(self, width=500, height=120)
-        self.frame_pastas.pack(pady=(0, 15), padx=40)
+        self.frame_pastas = ctk.CTkScrollableFrame(self, width=500, height=60)
+        self.frame_pastas.pack(pady=(0, 4), padx=40, fill="both", expand=True)
         
         self.lbl_vazio = ctk.CTkLabel(self.frame_pastas, text="Nenhum cartão detectado.")
-        self.lbl_vazio.pack(pady=40)
+        self.lbl_vazio.pack(pady=15)
 
         self.lbl_destino = ctk.CTkLabel(self, text="Pasta de Destino no Computador:")
         self.lbl_destino.pack(anchor="w", padx=40)
         
         self.frame_destino = ctk.CTkFrame(self, fg_color="transparent")
-        self.frame_destino.pack(fill="x", padx=40, pady=(0, 15))
+        self.frame_destino.pack(fill="x", padx=40, pady=(0, 4))
         
-        self.entry_destino = ctk.CTkEntry(self.frame_destino, textvariable=self.destino_path, width=400, state="readonly")
-        self.entry_destino.pack(side="left", padx=(0, 10))
+        self.entry_destino = ctk.CTkEntry(self.frame_destino, textvariable=self.destino_path, width=400, height=28, state="readonly")
+        self.entry_destino.pack(side="left", padx=(0, 10), fill="x", expand=True)
         
-        self.btn_destino = ctk.CTkButton(self.frame_destino, text="Procurar...", width=110, command=self.selecionar_destino)
+        self.btn_destino = ctk.CTkButton(self.frame_destino, text="Procurar...", width=110, height=28, command=self.selecionar_destino)
         self.btn_destino.pack(side="left")
 
         # Checkbox atualizada para refletir a alta qualidade
         self.converter_raw_var = ctk.BooleanVar(value=False)
         self.chk_converter = ctk.CTkCheckBox(self, text="Converter RAW para JPEG (Processamento Alta Qualidade)", variable=self.converter_raw_var)
-        self.chk_converter.pack(anchor="w", padx=40, pady=(0, 15))
+        self.chk_converter.pack(anchor="w", padx=40, pady=(0, 4))
 
         self.lbl_progresso = ctk.CTkLabel(self, text="Progresso: 0%")
         self.lbl_progresso.pack(anchor="w", padx=40)
-        self.progressbar = ctk.CTkProgressBar(self, width=520)
-        self.progressbar.pack(pady=(5, 20), padx=40)
+        self.progressbar = ctk.CTkProgressBar(self, width=520, height=8)
+        self.progressbar.pack(pady=(1, 6), padx=40, fill="x")
         self.progressbar.set(0)
 
         # Botão principal de transferência
         self.frame_botoes = ctk.CTkFrame(self, fg_color="transparent")
-        self.frame_botoes.pack(pady=(10, 5), padx=40, fill="x")
+        self.frame_botoes.pack(pady=(2, 1), padx=40, fill="x")
 
         self.btn_iniciar = ctk.CTkButton(
             self.frame_botoes, 
             text="Iniciar Transferência", 
-            font=ctk.CTkFont(size=15, weight="bold"), 
-            height=45, 
+            font=ctk.CTkFont(size=13, weight="bold"), 
+            height=36, 
             fg_color="green", 
             hover_color="darkgreen", 
             command=self.iniciar_transferencia
@@ -563,13 +564,13 @@ class ImportadorFotosApp(ctk.CTk):
 
         # Botões secundários posicionados lado a lado abaixo da transferência
         self.frame_botoes_secundarios = ctk.CTkFrame(self, fg_color="transparent")
-        self.frame_botoes_secundarios.pack(pady=(5, 20), padx=40, fill="x")
+        self.frame_botoes_secundarios.pack(pady=(1, 4), padx=40, fill="x")
 
         self.btn_selecionar = ctk.CTkButton(
             self.frame_botoes_secundarios, 
             text="🔍 Selecionar / Revisar Fotos", 
-            height=45, 
-            font=ctk.CTkFont(size=14, weight="bold"), 
+            height=36, 
+            font=ctk.CTkFont(size=12, weight="bold"), 
             fg_color="#1f538d", 
             hover_color="#14375e", 
             command=self.abrir_revisor, 
@@ -580,25 +581,37 @@ class ImportadorFotosApp(ctk.CTk):
         self.btn_abrir = ctk.CTkButton(
             self.frame_botoes_secundarios, 
             text="📁 Abrir Pasta", 
-            height=45, 
-            font=ctk.CTkFont(size=14), 
+            height=36, 
+            font=ctk.CTkFont(size=12), 
             command=self.abrir_pasta, 
             state="disabled"
         )
         self.btn_abrir.pack(side="right", fill="x", expand=True)
 
+        # Campo para Link da Pasta do Google Drive
+        self.lbl_drive_link = ctk.CTkLabel(self, text="Link da Pasta no Google Drive (Opcional - se vazio, vai para a raiz):")
+        self.lbl_drive_link.pack(anchor="w", padx=40, pady=(2, 1))
+        
+        self.entry_drive_link = ctk.CTkEntry(
+            self, 
+            width=520, 
+            height=28,
+            placeholder_text="Cole o link da pasta do Google Drive aqui (Ex: https://drive.google.com/drive/folders/...)"
+        )
+        self.entry_drive_link.pack(pady=(0, 4), padx=40, fill="x")
+
         # Botão para enviar as fotos selecionadas para o Google Drive
         self.btn_enviar_drive = ctk.CTkButton(
             self, 
             text="📤 Enviar Fotos Selecionadas para o Google Drive", 
-            height=45, 
-            font=ctk.CTkFont(size=14, weight="bold"), 
+            height=36, 
+            font=ctk.CTkFont(size=12, weight="bold"), 
             fg_color="#4285F4", 
             hover_color="#357ae8", 
             command=self.iniciar_upload_drive, 
             state="disabled"
         )
-        self.btn_enviar_drive.pack(pady=(5, 20), padx=40, fill="x")
+        self.btn_enviar_drive.pack(pady=(2, 10), padx=40, fill="x")
 
     def monitorar_cartao(self):
         drives_iniciais = [p.device for p in psutil.disk_partitions()]
@@ -843,6 +856,18 @@ class ImportadorFotosApp(ctk.CTk):
             else:
                 subprocess.Popen(["xdg-open", destino])
 
+    def extrair_id_pasta_drive(self, link_ou_id):
+        link_ou_id = link_ou_id.strip()
+        if not link_ou_id:
+            return 'root'
+        if "drive.google.com" in link_ou_id:
+            partes = link_ou_id.split("/folders/")
+            if len(partes) > 1:
+                # Pega a parte após "/folders/" e divide por "?" ou "/" para isolar o ID puro
+                subparte = partes[1].split("?")[0].split("/")[0]
+                return subparte
+        return link_ou_id
+
     def iniciar_upload_drive(self):
         if not GOOGLE_DRIVE_DISPONIVEL:
             messagebox.showerror(
@@ -854,11 +879,6 @@ class ImportadorFotosApp(ctk.CTk):
 
         if not self.arquivos_transferidos:
             messagebox.showwarning("Aviso", "Não há fotos disponíveis para upload!")
-            return
-
-        nome_fotografo = self.entry_nome.get().strip()
-        if not nome_fotografo:
-            messagebox.showwarning("Aviso", "Por favor, preencha o nome do fotógrafo para organizar a pasta no Google Drive!")
             return
 
         caminho_credenciais = os.path.join(os.path.dirname(os.path.abspath(__file__)), "credentials.json")
@@ -877,16 +897,19 @@ class ImportadorFotosApp(ctk.CTk):
         self.btn_abrir.configure(state="disabled")
         self.btn_enviar_drive.configure(state="disabled")
         self.btn_manual.configure(state="disabled")
+        self.entry_drive_link.configure(state="disabled")
+
+        link_pasta = self.entry_drive_link.get().strip()
 
         # Inicia a thread de upload em segundo plano para não travar a UI
         thread_upload = threading.Thread(
             target=self.processar_upload_drive, 
-            args=(nome_fotografo, caminho_credenciais), 
+            args=(caminho_credenciais, link_pasta), 
             daemon=True
         )
         thread_upload.start()
 
-    def processar_upload_drive(self, nome_fotografo, caminho_credenciais):
+    def processar_upload_drive(self, caminho_credenciais, link_pasta):
         SCOPES = ['https://www.googleapis.com/auth/drive']
         token_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'token.json')
         creds = None
@@ -933,16 +956,30 @@ class ImportadorFotosApp(ctk.CTk):
             self.after(0, lambda: self.lbl_progresso.configure(text="Conectando ao Google Drive..."))
             service = build('drive', 'v3', credentials=creds)
 
-            # Define o nome para a pasta organizada
-            nome_pasta_drive = f"Fotos - {nome_fotografo} - {time.strftime('%d-%m-%Y')}"
-            self.after(0, lambda: self.lbl_progresso.configure(text=f"Criando pasta '{nome_pasta_drive}' no Drive..."))
+            # Resolve a pasta de destino
+            folder_id = self.extrair_id_pasta_drive(link_pasta)
+            nome_destino_exibicao = "a raiz do seu Google Drive"
             
-            folder_metadata = {
-                'name': nome_pasta_drive,
-                'mimeType': 'application/vnd.google-apps.folder'
-            }
-            folder = service.files().create(body=folder_metadata, fields='id').execute()
-            folder_id = folder.get('id')
+            if folder_id != 'root':
+                self.after(0, lambda: self.lbl_progresso.configure(text="Acessando pasta no Google Drive..."))
+                try:
+                    pasta_meta = service.files().get(fileId=folder_id, fields='name, mimeType').execute()
+                    if pasta_meta.get('mimeType') != 'application/vnd.google-apps.folder':
+                        self.after(0, lambda: messagebox.showwarning(
+                            "Aviso", 
+                            "O link fornecido não pertence a uma pasta do Google Drive. As fotos serão enviadas para a raiz."
+                        ))
+                        folder_id = 'root'
+                    else:
+                        nome_destino_exibicao = f"a pasta '{pasta_meta.get('name')}'"
+                except Exception as e:
+                    self.after(0, lambda: messagebox.showerror(
+                        "Pasta Não Encontrada", 
+                        "Não foi possível acessar a pasta fornecida no Google Drive.\n\n"
+                        "Verifique se o link está correto, se a pasta não foi excluída e se você possui permissões de gravação nela."
+                    ))
+                    self.after(0, self.finalizar_upload_gui)
+                    return
 
             arquivos_para_enviar = self.arquivos_transferidos.copy()
             total_arquivos = len(arquivos_para_enviar)
@@ -959,9 +996,10 @@ class ImportadorFotosApp(ctk.CTk):
                 ))
                 
                 file_metadata = {
-                    'name': nome_arquivo,
-                    'parents': [folder_id]
+                    'name': nome_arquivo
                 }
+                if folder_id != 'root':
+                    file_metadata['parents'] = [folder_id]
                 
                 # Determina o MIME type com base na extensão
                 ext = os.path.splitext(nome_arquivo)[1].lower()
@@ -1001,7 +1039,7 @@ class ImportadorFotosApp(ctk.CTk):
 
             self.after(0, lambda: messagebox.showinfo(
                 "Upload Concluído", 
-                f"Sucesso! {total_arquivos} fotos foram enviadas com sucesso para a pasta '{nome_pasta_drive}' no seu Google Drive!"
+                f"Sucesso! {total_arquivos} fotos foram enviadas com sucesso para {nome_destino_exibicao} no seu Google Drive!"
             ))
 
         except Exception as e:
@@ -1015,6 +1053,7 @@ class ImportadorFotosApp(ctk.CTk):
         self.btn_abrir.configure(state="normal")
         self.btn_enviar_drive.configure(state="normal")
         self.btn_manual.configure(state="normal")
+        self.entry_drive_link.configure(state="normal")
         self.progressbar.set(0)
         self.lbl_progresso.configure(text="Progresso: 0%")
 
