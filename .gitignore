@@ -15,3 +15,7 @@ dist/
 # Credenciais do Google Drive API
 credentials.json
 token.json
+
+config_pastas.json
+
+/Teste

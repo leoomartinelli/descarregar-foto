@@ -1,6 +1,7 @@
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
 import os
+import json
 import shutil
 import threading
 import time
@@ -45,7 +46,7 @@ class RevisorFotosWindow(ctk.CTkToplevel):
         
         # Garante foco e captura de eventos na janela de revisão
         self.focus_force()
-        self.grab_set()
+        self.after(100, lambda: self.grab_set() if self.winfo_exists() else None)
         self.after(200, self.focus_force)
         
         # Maximiza a janela após carregar para visualização otimizada
@@ -412,6 +413,10 @@ class RevisorFotosWindow(ctk.CTkToplevel):
             if not confirmar:
                 return
                 
+            # Oculta a janela de seleção imediatamente para melhor UX e libera o foco
+            self.withdraw()
+            self.grab_release()
+            
             sucessos = 0
             erros = 0
             for path in self.descartados:
@@ -430,10 +435,12 @@ class RevisorFotosWindow(ctk.CTkToplevel):
                 mensagem += f"\n(Erro ao apagar {erros} foto(s).)"
             messagebox.showinfo("Sucesso", mensagem)
         else:
+            # Oculta a janela de seleção imediatamente para melhor UX e libera o foco
+            self.withdraw()
+            self.grab_release()
             messagebox.showinfo("Concluído", "Revisão terminada! Nenhuma foto foi apagada.")
             
         self.limpar_eventos_globais()
-        self.grab_release()
         self.destroy()
         
         # Garante que os botões na janela principal sejam reativados corretamente
@@ -467,12 +474,229 @@ class RevisorFotosWindow(ctk.CTkToplevel):
             self.destroy()
 
 
+class ConfiguradorDriveWindow(ctk.CTkToplevel):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.parent = parent
+        self.title("Configurações do Líder - Pastas do Drive")
+        self.geometry("700x600")
+        self.minsize(500, 400)
+        
+        # Foco e grab_set seguro
+        self.focus_force()
+        self.after(100, lambda: self.grab_set() if self.winfo_exists() else None)
+        
+        self.caminho_config = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config_pastas.json")
+        self.pastas = self.carregar_config()
+        
+        self.setup_ui()
+        self.atualizar_lista()
+
+    def carregar_config(self):
+        if os.path.exists(self.caminho_config):
+            try:
+                with open(self.caminho_config, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except Exception as e:
+                print(f"Erro ao carregar JSON: {e}")
+        return []
+
+    def salvar_config(self):
+        try:
+            with open(self.caminho_config, 'w', encoding='utf-8') as f:
+                json.dump(self.pastas, f, indent=4, ensure_ascii=False)
+            return True
+        except Exception as e:
+            messagebox.showerror("Erro", f"Não foi possível salvar as configurações: {e}")
+            return False
+
+    def setup_ui(self):
+        self.grid_rowconfigure(1, weight=1)
+        self.grid_columnconfigure(0, weight=1)
+        
+        # Título
+        self.lbl_titulo = ctk.CTkLabel(
+            self, 
+            text="Pastas Pré-configuradas para os Fotógrafos", 
+            font=ctk.CTkFont(size=16, weight="bold")
+        )
+        self.lbl_titulo.grid(row=0, column=0, pady=(15, 5), padx=20, sticky="w")
+        
+        # Lista de Pastas (Scrollable Frame)
+        self.scroll_lista = ctk.CTkScrollableFrame(self, fg_color="#1a1a1a")
+        self.scroll_lista.grid(row=1, column=0, padx=20, pady=5, sticky="nsew")
+        
+        # Container de adição de nova pasta
+        self.frame_adicionar = ctk.CTkFrame(self, fg_color="#242424")
+        self.frame_adicionar.grid(row=2, column=0, padx=20, pady=(10, 15), sticky="ew")
+        
+        self.frame_adicionar.grid_columnconfigure(0, weight=1)
+        self.frame_adicionar.grid_columnconfigure(1, weight=0)
+        
+        # Campos de entrada
+        self.lbl_add_titulo = ctk.CTkLabel(
+            self.frame_adicionar, 
+            text="Adicionar Nova Pasta do Google Drive", 
+            font=ctk.CTkFont(weight="bold")
+        )
+        self.lbl_add_titulo.grid(row=0, column=0, columnspan=2, padx=15, pady=(10, 5), sticky="w")
+        
+        # Link do Drive
+        self.entry_link = ctk.CTkEntry(
+            self.frame_adicionar, 
+            placeholder_text="Cole o link ou ID da pasta do Google Drive aqui..."
+        )
+        self.entry_link.grid(row=1, column=0, columnspan=2, padx=15, pady=5, sticky="ew")
+        
+        # Nome personalizado (opcional)
+        self.entry_nome_pasta = ctk.CTkEntry(
+            self.frame_adicionar, 
+            placeholder_text="Nome da Pasta (Deixe vazio para buscar automaticamente do Drive)"
+        )
+        self.entry_nome_pasta.grid(row=2, column=0, padx=15, pady=5, sticky="ew")
+        
+        # Botões de ação de adição
+        self.btn_add = ctk.CTkButton(
+            self.frame_adicionar, 
+            text="Adicionar", 
+            fg_color="#2ecc71", 
+            hover_color="#27ae60",
+            font=ctk.CTkFont(weight="bold"),
+            command=self.adicionar_pasta
+        )
+        self.btn_add.grid(row=2, column=1, padx=15, pady=5, sticky="ew")
+
+        # Botão Fechar no rodapé
+        self.btn_salvar_fechar = ctk.CTkButton(
+            self, 
+            text="Salvar e Fechar", 
+            height=32,
+            font=ctk.CTkFont(weight="bold"),
+            command=self.salvar_e_fechar
+        )
+        self.btn_salvar_fechar.grid(row=3, column=0, padx=20, pady=(0, 15), sticky="ew")
+
+    def obter_nome_pasta_drive(self, link_ou_id):
+        if not GOOGLE_DRIVE_DISPONIVEL:
+            return None
+        folder_id = self.parent.extrair_id_pasta_drive(link_ou_id)
+        if folder_id == 'root':
+            return "Raiz do Google Drive"
+            
+        caminho_credenciais = os.path.join(os.path.dirname(os.path.abspath(__file__)), "credentials.json")
+        if not os.path.exists(caminho_credenciais):
+            return None
+            
+        SCOPES = ['https://www.googleapis.com/auth/drive']
+        token_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'token.json')
+        creds = None
+        if os.path.exists(token_path):
+            try:
+                creds = Credentials.from_authorized_user_file(token_path, SCOPES)
+            except Exception:
+                pass
+        
+        if not creds or not creds.valid:
+            return None
+            
+        try:
+            service = build('drive', 'v3', credentials=creds)
+            pasta_meta = service.files().get(fileId=folder_id, fields='name').execute()
+            return pasta_meta.get('name')
+        except Exception as e:
+            print(f"Erro ao obter nome da pasta no Drive: {e}")
+            return None
+
+    def adicionar_pasta(self):
+        link = self.entry_link.get().strip()
+        if not link:
+            messagebox.showwarning("Aviso", "Insira o link ou ID da pasta do Google Drive!")
+            return
+            
+        nome = self.entry_nome_pasta.get().strip()
+        
+        # Se o nome estiver vazio, tentamos obter automaticamente do Drive
+        if not nome:
+            nome_detectado = self.obter_nome_pasta_drive(link)
+            if nome_detectado:
+                nome = nome_detectado
+            else:
+                # Fallback: extrai o ID e usa como nome
+                id_pasta = self.parent.extrair_id_pasta_drive(link)
+                nome = f"Pasta ({id_pasta[:8]}...)"
+                
+        # Adiciona à lista
+        self.pastas.append({
+            "nome": nome,
+            "link": link
+        })
+        
+        # Limpa os campos
+        self.entry_link.delete(0, 'end')
+        self.entry_nome_pasta.delete(0, 'end')
+        
+        self.atualizar_lista()
+
+    def remover_pasta(self, index):
+        if 0 <= index < len(self.pastas):
+            del self.pastas[index]
+            self.atualizar_lista()
+
+    def atualizar_lista(self):
+        # Limpa o frame da lista
+        for widget in self.scroll_lista.winfo_children():
+            widget.destroy()
+            
+        if not self.pastas:
+            lbl_vazio = ctk.CTkLabel(
+                self.scroll_lista, 
+                text="Nenhuma pasta configurada. Adicione uma pasta abaixo.", 
+                text_color="gray"
+            )
+            lbl_vazio.pack(pady=30)
+            return
+            
+        for i, item in enumerate(self.pastas):
+            frame_item = ctk.CTkFrame(self.scroll_lista, fg_color="#2b2b2b")
+            frame_item.pack(fill="x", pady=4, padx=5)
+            
+            # Texto da pasta
+            lbl_info = ctk.CTkLabel(
+                frame_item, 
+                text=f"📁 {item['nome']}\nLink/ID: {item['link']}", 
+                font=ctk.CTkFont(size=12),
+                justify="left",
+                anchor="w"
+            )
+            lbl_info.pack(side="left", padx=10, pady=6, fill="x", expand=True)
+            
+            # Botão de remover
+            btn_remove = ctk.CTkButton(
+                frame_item, 
+                text="Remover", 
+                width=60, 
+                height=24,
+                fg_color="#e74c3c", 
+                hover_color="#c0392b",
+                font=ctk.CTkFont(size=11, weight="bold"),
+                command=lambda idx=i: self.remover_pasta(idx)
+            )
+            btn_remove.pack(side="right", padx=10, pady=6)
+
+    def salvar_e_fechar(self):
+        if self.salvar_config():
+            # Atualiza o dropdown na tela principal
+            self.parent.recarregar_combo_drive()
+            self.grab_release()
+            self.destroy()
+
+
 class ImportadorFotosApp(ctk.CTk):
     def __init__(self):
         super().__init__()
 
         self.title("Descarregador de Fotos - Ministério")
-        self.geometry("600x620")
+        self.geometry("700x820")
         self.resizable(True, True)
         self.minsize(550, 500)
 
@@ -483,14 +707,99 @@ class ImportadorFotosApp(ctk.CTk):
         self.checkboxes_pastas = []
         self.arquivos_transferidos = [] # Guarda o caminho de todas as fotos transferidas com sucesso
         
+        # Carrega configuração de pastas do Drive para o líder
+        self.caminho_config_pastas = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config_pastas.json")
+        self.pastas_drive = self.carregar_config_pastas()
+        
         self.setup_ui()
         
         self.monitor_thread = threading.Thread(target=self.monitorar_cartao, daemon=True)
         self.monitor_thread.start()
 
+    def carregar_config_pastas(self):
+        if os.path.exists(self.caminho_config_pastas):
+            try:
+                with open(self.caminho_config_pastas, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except Exception as e:
+                print(f"Erro ao carregar pastas do Drive: {e}")
+        return []
+
+    def abrir_configurador_drive(self):
+        self.janela_config = ConfiguradorDriveWindow(self)
+
+    def recarregar_combo_drive(self):
+        self.pastas_drive = self.carregar_config_pastas()
+        valores_menu = ["Raiz do Google Drive (Padrão)"]
+        for p in self.pastas_drive:
+            valores_menu.append(p['nome'])
+        self.combo_drive.configure(values=valores_menu)
+        
+        # Se a opção atualmente selecionada não existir mais na nova lista, reseta para o padrão
+        opcao_atual = self.combo_drive_var.get()
+        if opcao_atual not in valores_menu:
+            self.combo_drive_var.set(valores_menu[0])
+
+    def obter_link_drive_selecionado(self):
+        opcao_selecionada = self.combo_drive_var.get()
+        if opcao_selecionada == "Raiz do Google Drive (Padrão)":
+            return ""
+        # Procura a pasta correspondente pelo nome
+        for p in self.pastas_drive:
+            if p['nome'] == opcao_selecionada:
+                return p['link']
+        return ""
+
     def setup_ui(self):
-        self.lbl_titulo = ctk.CTkLabel(self, text="Descarregador de Fotos", font=ctk.CTkFont(size=20, weight="bold"))
-        self.lbl_titulo.pack(pady=(8, 1))
+        # Frame do Cabeçalho para alinhar o título e os botões Novo e Config no topo
+        self.frame_header = ctk.CTkFrame(self, fg_color="transparent")
+        self.frame_header.pack(fill="x", padx=40, pady=(8, 1))
+        
+        self.frame_header.grid_columnconfigure(0, weight=0)
+        self.frame_header.grid_columnconfigure(1, weight=1)
+        self.frame_header.grid_columnconfigure(2, weight=0)
+
+        # Container esquerdo do Cabeçalho para os botões Novo e Config
+        self.frame_header_botoes = ctk.CTkFrame(self.frame_header, fg_color="transparent")
+        self.frame_header_botoes.grid(row=0, column=0, sticky="w")
+
+        # Botão Novo Descarregamento no canto superior esquerdo
+        self.btn_novo = ctk.CTkButton(
+            self.frame_header_botoes, 
+            text="🔄 Novo", 
+            font=ctk.CTkFont(size=11, weight="bold"), 
+            height=26, 
+            width=70,
+            fg_color="#34495e", 
+            hover_color="#2c3e50", 
+            command=self.novo_descarregamento
+        )
+        self.btn_novo.pack(side="left", padx=(0, 5))
+
+        # Botão de Configuração do Líder
+        self.btn_config = ctk.CTkButton(
+            self.frame_header_botoes, 
+            text="⚙️ Config", 
+            font=ctk.CTkFont(size=11, weight="bold"), 
+            height=26, 
+            width=70,
+            fg_color="#34495e", 
+            hover_color="#2c3e50", 
+            command=self.abrir_configurador_drive
+        )
+        self.btn_config.pack(side="left")
+
+        # Título centralizado
+        self.lbl_titulo = ctk.CTkLabel(
+            self.frame_header, 
+            text="Descarregador de Fotos", 
+            font=ctk.CTkFont(size=20, weight="bold")
+        )
+        self.lbl_titulo.grid(row=0, column=1, sticky="nsew")
+
+        # Compensador invisível à direita para manter o título perfeitamente centralizado
+        self.spacer_header = ctk.CTkLabel(self.frame_header, text="", width=145)
+        self.spacer_header.grid(row=0, column=2, sticky="e")
 
         self.lbl_status = ctk.CTkLabel(self, text="Aguardando inserção do Cartão SD...", text_color="orange", font=ctk.CTkFont(size=12))
         self.lbl_status.pack(pady=(0, 4))
@@ -588,17 +897,24 @@ class ImportadorFotosApp(ctk.CTk):
         )
         self.btn_abrir.pack(side="right", fill="x", expand=True)
 
-        # Campo para Link da Pasta do Google Drive
-        self.lbl_drive_link = ctk.CTkLabel(self, text="Link da Pasta no Google Drive (Opcional - se vazio, vai para a raiz):")
+        # Campo para Pasta de Destino no Google Drive (Dropbox)
+        self.lbl_drive_link = ctk.CTkLabel(self, text="Pasta de Destino no Google Drive:")
         self.lbl_drive_link.pack(anchor="w", padx=40, pady=(2, 1))
         
-        self.entry_drive_link = ctk.CTkEntry(
+        # Carrega os valores para o OptionMenu
+        valores_menu = ["Raiz do Google Drive (Padrão)"]
+        for p in self.pastas_drive:
+            valores_menu.append(p['nome'])
+            
+        self.combo_drive_var = ctk.StringVar(value=valores_menu[0])
+        self.combo_drive = ctk.CTkOptionMenu(
             self, 
-            width=520, 
-            height=28,
-            placeholder_text="Cole o link da pasta do Google Drive aqui (Ex: https://drive.google.com/drive/folders/...)"
+            values=valores_menu,
+            variable=self.combo_drive_var,
+            width=520,
+            height=28
         )
-        self.entry_drive_link.pack(pady=(0, 4), padx=40, fill="x")
+        self.combo_drive.pack(pady=(0, 4), padx=40, fill="x")
 
         # Botão para enviar as fotos selecionadas para o Google Drive
         self.btn_enviar_drive = ctk.CTkButton(
@@ -704,6 +1020,32 @@ class ImportadorFotosApp(ctk.CTk):
         if pasta:
             self.destino_path.set(pasta)
 
+    def novo_descarregamento(self):
+        # Limpa o nome do fotógrafo
+        self.entry_nome.delete(0, 'end')
+        
+        # Reseta a pasta do Drive para a padrão (Raiz)
+        self.combo_drive_var.set("Raiz do Google Drive (Padrão)")
+        
+        # Reseta os arquivos transferidos
+        self.arquivos_transferidos.clear()
+        
+        # Reseta o progresso
+        self.progressbar.set(0)
+        self.lbl_progresso.configure(text="Progresso: 0%")
+        
+        # Desabilita botões secundários
+        self.btn_selecionar.configure(state="disabled")
+        self.btn_abrir.configure(state="disabled")
+        self.btn_enviar_drive.configure(state="disabled")
+        self.btn_iniciar.configure(state="normal")
+        
+        # Reseta e recarrega os cartões/pastas de origem
+        if self.cartao_detectado and self.drive_path:
+            self.atualizar_ui_cartao_detectado(self.drive_path, e_manual=self.origem_manual)
+        else:
+            self.atualizar_ui_cartao_removido()
+
     def iniciar_transferencia(self):
         if not self.cartao_detectado:
             messagebox.showwarning("Aviso", "Nenhum cartão SD detectado!")
@@ -753,20 +1095,50 @@ class ImportadorFotosApp(ctk.CTk):
             self.after(0, lambda: self.btn_iniciar.configure(state="normal"))
             return
 
+        # Ordena os arquivos por data de modificação para garantir ordem cronológica na renomeação sequencial
+        try:
+            arquivos_para_copiar.sort(key=lambda x: os.path.getmtime(x))
+        except Exception:
+            arquivos_para_copiar.sort()
+
+        # Determina o formato dos dígitos baseado no total de arquivos a transferir (mínimo de 3 dígitos)
+        digitos = max(3, len(str(total_arquivos)))
+
+        # Encontra o próximo número sequencial disponível no destino para este fotógrafo
+        contador_inicio = 1
+        try:
+            arquivos_destino = os.listdir(destino)
+            prefixo = f"{nome_fotografo}_"
+            numeros_existentes = []
+            for f in arquivos_destino:
+                if f.startswith(prefixo):
+                    parte_sem_prefixo = f[len(prefixo):]
+                    nome_sem_ext_dest, _ = os.path.splitext(parte_sem_prefixo)
+                    parte_numerica = nome_sem_ext_dest.split('_')[0]
+                    if parte_numerica.isdigit():
+                        numeros_existentes.append(int(parte_numerica))
+            if numeros_existentes:
+                contador_inicio = max(numeros_existentes) + 1
+        except Exception as e:
+            print(f"Erro ao calcular offset de numeração: {e}")
+
         progresso_atual = 0
         lock = threading.Lock()
 
-        def processar_arquivo(caminho_arquivo):
+        def processar_arquivo(item):
             nonlocal progresso_atual
+            idx, caminho_arquivo = item
             nome_original = os.path.basename(caminho_arquivo)
-            nome_sem_ext, ext = os.path.splitext(nome_original)
+            _, ext = os.path.splitext(nome_original)
             eh_raw = ext.lower() in ['.cr2', '.nef', '.arw']
             
             if converter_raw and eh_raw:
-                novo_nome = f"{nome_fotografo}_{nome_sem_ext}.jpg"
+                ext_final = ".jpg"
             else:
-                novo_nome = f"{nome_fotografo}_{nome_original}"
+                ext_final = ext.lower()
                 
+            num_formatado = f"{idx + contador_inicio:0{digitos}d}"
+            novo_nome = f"{nome_fotografo}_{num_formatado}{ext_final}"
             caminho_destino = os.path.join(destino, novo_nome)
 
             contador = 1
@@ -801,7 +1173,7 @@ class ImportadorFotosApp(ctk.CTk):
                 self.lbl_progresso.configure(text=f"Progresso: {percentual}% ({progresso_atual}/{total_arquivos})")
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-            executor.map(processar_arquivo, arquivos_para_copiar)
+            executor.map(processar_arquivo, enumerate(arquivos_para_copiar))
 
         # Chama a finalização da transferência de forma segura na thread principal
         self.after(0, self.finalizar_transferencia_gui)
@@ -897,9 +1269,9 @@ class ImportadorFotosApp(ctk.CTk):
         self.btn_abrir.configure(state="disabled")
         self.btn_enviar_drive.configure(state="disabled")
         self.btn_manual.configure(state="disabled")
-        self.entry_drive_link.configure(state="disabled")
+        self.combo_drive.configure(state="disabled")
 
-        link_pasta = self.entry_drive_link.get().strip()
+        link_pasta = self.obter_link_drive_selecionado()
 
         # Inicia a thread de upload em segundo plano para não travar a UI
         thread_upload = threading.Thread(
@@ -1053,7 +1425,7 @@ class ImportadorFotosApp(ctk.CTk):
         self.btn_abrir.configure(state="normal")
         self.btn_enviar_drive.configure(state="normal")
         self.btn_manual.configure(state="normal")
-        self.entry_drive_link.configure(state="normal")
+        self.combo_drive.configure(state="normal")
         self.progressbar.set(0)
         self.lbl_progresso.configure(text="Progresso: 0%")
 
