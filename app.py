@@ -802,7 +802,9 @@ class ImportadorFotosApp(ctk.CTk):
         total_fotos = len(self.arquivos_transferidos)
         if total_fotos > 0:
             self.btn_selecionar.configure(state="normal")
-            self.btn_enviar_drive.configure(state="normal")
+            
+            # Garantimos que o botão do Drive comece desabilitado caso o usuário queira revisar as fotos primeiro
+            self.btn_enviar_drive.configure(state="disabled")
             
             # Pergunta se o usuário gostaria de abrir o painel de seleção diretamente
             revisar = messagebox.askyesno(
@@ -812,6 +814,9 @@ class ImportadorFotosApp(ctk.CTk):
             )
             if revisar:
                 self.abrir_revisor()
+            else:
+                # Se ele escolheu NÃO revisar, pode subir tudo imediatamente
+                self.btn_enviar_drive.configure(state="normal")
         else:
             self.btn_enviar_drive.configure(state="disabled")
             messagebox.showinfo("Concluído", "A cópia foi finalizada, mas nenhuma imagem compatível com revisão foi transferida.")
@@ -823,6 +828,7 @@ class ImportadorFotosApp(ctk.CTk):
             
         self.btn_selecionar.configure(state="disabled")
         self.btn_abrir.configure(state="disabled")
+        self.btn_enviar_drive.configure(state="disabled") # Desabilita o Drive durante a revisão
         
         # Abre a tela de revisão
         self.janela_revisao = RevisorFotosWindow(self, self.arquivos_transferidos, self.destino_path.get())
