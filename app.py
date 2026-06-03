@@ -481,7 +481,7 @@ class ConfiguradorDriveWindow(ctk.CTkToplevel):
         self.parent = parent
         self.title("Configurações do Líder - Pastas do Drive")
         self.geometry("700x600")
-        self.minsize(500, 400)
+        self.minsize(700, 600)
         
         # Foco e grab_set seguro
         self.focus_force()
@@ -712,7 +712,7 @@ class ImportadorFotosApp(ctk.CTk):
         self.title("Descarregador de Fotos - Ministério")
         self.geometry("700x820")
         self.resizable(True, True)
-        self.minsize(550, 500)
+        self.minsize(700, 820)
 
         self.destino_path = ctk.StringVar()
         self.cartao_detectado = False
