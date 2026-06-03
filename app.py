@@ -477,6 +477,9 @@ class RevisorFotosWindow(ctk.CTkToplevel):
             self.destroy()
 
 
+
+
+
 class HistoricoDadosWindow(ctk.CTkToplevel):
     def __init__(self, parent):
         super().__init__(parent)
@@ -872,6 +875,10 @@ class ImportadorFotosApp(ctk.CTk):
         self.drive_path = ""
         self.checkboxes_pastas = []
         self.arquivos_transferidos = [] # Guarda o caminho de todas as fotos transferidas com sucesso
+        self.upload_em_andamento = False
+        self.copia_em_andamento = False
+        self.lotes_vars = []
+        self.lotes_detectados = []
         
         # Carrega configuração de pastas do Drive para o líder
         self.caminho_config_pastas = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config_pastas.json")
@@ -881,6 +888,8 @@ class ImportadorFotosApp(ctk.CTk):
         
         self.monitor_thread = threading.Thread(target=self.monitorar_cartao, daemon=True)
         self.monitor_thread.start()
+
+        self.protocol("WM_DELETE_WINDOW", self.ao_fechar_janela)
 
     def carregar_config_pastas(self):
         if os.path.exists(self.caminho_config_pastas):
@@ -900,6 +909,19 @@ class ImportadorFotosApp(ctk.CTk):
 
     def abrir_historico_dados(self):
         self.janela_dados = HistoricoDadosWindow(self)
+
+    def ao_fechar_janela(self):
+        if self.upload_em_andamento or self.copia_em_andamento:
+            confirmar = messagebox.askyesno(
+                "Operação em Andamento",
+                "Um envio para o Google Drive ou cópia local de fotos está em andamento!\n\n"
+                "Se você fechar o programa agora, o processo será interrompido.\n"
+                "Deseja realmente fechar o aplicativo?"
+            )
+            if not confirmar:
+                return
+        
+        self.destroy()
 
     def registrar_historico(self, total_selecionadas=None):
         try:
@@ -1066,7 +1088,7 @@ class ImportadorFotosApp(ctk.CTk):
         )
         self.btn_manual.pack(side="right")
         
-        self.frame_pastas = ctk.CTkScrollableFrame(self, width=500, height=60)
+        self.frame_pastas = ctk.CTkScrollableFrame(self, width=500, height=130)
         self.frame_pastas.pack(pady=(0, 4), padx=40, fill="both", expand=True)
         
         self.lbl_vazio = ctk.CTkLabel(self.frame_pastas, text="Nenhum cartão detectado.")
@@ -1211,12 +1233,14 @@ class ImportadorFotosApp(ctk.CTk):
         for widget in self.frame_pastas.winfo_children():
             widget.destroy()
         self.checkboxes_pastas.clear()
+        self.lotes_vars.clear()
+        self.lotes_detectados.clear()
         
         try:
             pastas_encontradas = []
             
             # Opção de importar a pasta raiz inteira de forma direta
-            var_raiz = ctk.StringVar(value="")
+            var_raiz = ctk.StringVar(value=".")
             cb_raiz = ctk.CTkCheckBox(
                 self.frame_pastas, 
                 text="[Pasta Completa] Importar tudo desta pasta principal", 
@@ -1247,6 +1271,58 @@ class ImportadorFotosApp(ctk.CTk):
                 cb.pack(anchor="w", pady=5, padx=10)
                 self.checkboxes_pastas.append(var)
                 
+            # Agora escaneamos os arquivos para detectar se existem Lotes discrepantes de horário
+            arquivos_cartao = []
+            for root, dirs, files in os.walk(drive):
+                for file in files:
+                    if file.lower().endswith(('.png', '.jpg', '.jpeg', '.cr2', '.nef', '.arw', '.mp4')):
+                        arquivos_cartao.append(os.path.join(root, file))
+                        
+            if arquivos_cartao:
+                lotes = self.agrupar_por_lotes(arquivos_cartao, gap_minutos=10)
+                if len(lotes) > 1:
+                    self.lotes_detectados = lotes
+                    
+                    # Linha divisória
+                    lbl_div = ctk.CTkLabel(
+                        self.frame_pastas, 
+                        text="— Filtrar por Período de Horário (Lotes) —", 
+                        text_color="orange",
+                        font=ctk.CTkFont(size=11, weight="bold")
+                    )
+                    lbl_div.pack(anchor="w", pady=(12, 6), padx=10)
+                    
+                    import datetime
+                    total_lotes = len(lotes)
+                    for i, lote in enumerate(lotes):
+                        # O último lote (mais recente) vem marcado por padrão
+                        valor_padrao = (i == total_lotes - 1)
+                        var = ctk.BooleanVar(value=valor_padrao)
+                        self.lotes_vars.append(var)
+                        
+                        dt_inicio = datetime.datetime.fromtimestamp(lote["inicio"])
+                        dt_fim = datetime.datetime.fromtimestamp(lote["fim"])
+                        
+                        data_str = dt_inicio.strftime("%d/%m/%Y")
+                        hora_inicio = dt_inicio.strftime("%H:%M:%S")
+                        hora_fim = dt_fim.strftime("%H:%M:%S")
+                        
+                        rotulo_lote = f"Lote {i+1}"
+                        if i == total_lotes - 1:
+                            rotulo_lote += " (Mais Recente)"
+                            
+                        texto_lote = (
+                            f"{rotulo_lote}  |  📅 {data_str}  |  🕒 das {hora_inicio} às {hora_fim}  |  📸 {len(lote['arquivos'])} fotos"
+                        )
+                        
+                        chk = ctk.CTkCheckBox(
+                            self.frame_pastas, 
+                            text=texto_lote, 
+                            variable=var,
+                            font=ctk.CTkFont(size=11)
+                        )
+                        chk.pack(anchor="w", pady=4, padx=10)
+                        
         except Exception as e:
             print(f"Erro ao ler cartão: {e}")
 
@@ -1255,6 +1331,8 @@ class ImportadorFotosApp(ctk.CTk):
         for widget in self.frame_pastas.winfo_children():
             widget.destroy()
         self.checkboxes_pastas.clear()
+        self.lotes_vars.clear()
+        self.lotes_detectados.clear()
         self.lbl_vazio = ctk.CTkLabel(self.frame_pastas, text="Nenhum cartão detectado.")
         self.lbl_vazio.pack(pady=40)
 
@@ -1309,6 +1387,32 @@ class ImportadorFotosApp(ctk.CTk):
             messagebox.showwarning("Aviso", "Selecione pelo menos uma pasta do cartão para descarregar!")
             return
 
+        # Coleta todos os arquivos das pastas selecionadas
+        arquivos = self.obter_arquivos_das_pastas(pastas_selecionadas)
+
+        # Filtra pelos lotes selecionados se houver múltiplos lotes exibidos
+        if self.lotes_vars:
+            arquivos_para_copiar = []
+            lotes_selecionados_arquivos = set()
+            for i, var in enumerate(self.lotes_vars):
+                if var.get():
+                    lotes_selecionados_arquivos.update(self.lotes_detectados[i]["arquivos"])
+            
+            # Intersecção: arquivos que estão nas pastas selecionadas E nos lotes selecionados
+            for f in arquivos:
+                if f in lotes_selecionados_arquivos:
+                    arquivos_para_copiar.append(f)
+                    
+            if not arquivos_para_copiar:
+                messagebox.showwarning("Aviso", "Selecione pelo menos um Lote de Fotos para descarregar!")
+                return
+        else:
+            arquivos_para_copiar = arquivos
+
+        if not arquivos_para_copiar:
+            messagebox.showinfo("Informação", "Nenhuma imagem encontrada nas pastas selecionadas.")
+            return
+
         self.btn_iniciar.configure(state="disabled")
         self.btn_selecionar.configure(state="disabled")
         self.btn_abrir.configure(state="disabled")
@@ -1319,27 +1423,70 @@ class ImportadorFotosApp(ctk.CTk):
         # Limpa os arquivos transferidos antes de uma nova importação
         self.arquivos_transferidos.clear()
         
+        self.copia_em_andamento = True
         thread_copia = threading.Thread(
             target=self.processar_copia, 
-            args=(nome_fotografo, destino, pastas_selecionadas, converter, criar_pasta_fotografo)
+            args=(nome_fotografo, destino, arquivos_para_copiar, converter, criar_pasta_fotografo)
         )
         thread_copia.start()
 
-    def processar_copia(self, nome_fotografo, destino, pastas_selecionadas, converter_raw, criar_pasta_fotografo):
-        if criar_pasta_fotografo:
-            destino = os.path.join(destino, nome_fotografo)
-            
-        os.makedirs(destino, exist_ok=True)
-        arquivos_para_copiar = []
-        
+    def obter_arquivos_das_pastas(self, pastas_selecionadas):
+        arquivos = []
         for pasta_relativa in pastas_selecionadas:
             pasta_origem = os.path.join(self.drive_path, os.path.normpath(pasta_relativa))
             if os.path.exists(pasta_origem):
                 for root, dirs, files in os.walk(pasta_origem):
                     for file in files:
                         if file.lower().endswith(('.png', '.jpg', '.jpeg', '.cr2', '.nef', '.arw', '.mp4')):
-                            arquivos_para_copiar.append(os.path.join(root, file))
+                            arquivos.append(os.path.join(root, file))
+        return arquivos
 
+    def agrupar_por_lotes(self, arquivos, gap_minutos=10):
+        if not arquivos:
+            return []
+        
+        # Ordena por mtime
+        arquivos_ordenados = []
+        for f in arquivos:
+            try:
+                mtime = os.path.getmtime(f)
+                arquivos_ordenados.append((f, mtime))
+            except Exception:
+                arquivos_ordenados.append((f, 0))
+                
+        arquivos_ordenados.sort(key=lambda x: x[1])
+        
+        lotes = []
+        lote_atual = {
+            "arquivos": [arquivos_ordenados[0][0]],
+            "inicio": arquivos_ordenados[0][1],
+            "fim": arquivos_ordenados[0][1]
+        }
+        
+        gap_segundos = gap_minutos * 60
+        
+        for f, mtime in arquivos_ordenados[1:]:
+            if mtime - lote_atual["fim"] > gap_segundos:
+                lotes.append(lote_atual)
+                lote_atual = {
+                    "arquivos": [f],
+                    "inicio": mtime,
+                    "fim": mtime
+                }
+            else:
+                lote_atual["arquivos"].append(f)
+                lote_atual["fim"] = mtime
+                
+        lotes.append(lote_atual)
+        return lotes
+
+
+
+    def processar_copia(self, nome_fotografo, destino, arquivos_para_copiar, converter_raw, criar_pasta_fotografo):
+        if criar_pasta_fotografo:
+            destino = os.path.join(destino, nome_fotografo)
+            
+        os.makedirs(destino, exist_ok=True)
         total_arquivos = len(arquivos_para_copiar)
         if total_arquivos == 0:
             self.after(0, lambda: messagebox.showinfo("Informação", "Nenhuma imagem encontrada nas pastas selecionadas."))
@@ -1430,6 +1577,7 @@ class ImportadorFotosApp(ctk.CTk):
         self.after(0, self.finalizar_transferencia_gui)
 
     def finalizar_transferencia_gui(self):
+        self.copia_em_andamento = False
         self.btn_iniciar.configure(state="normal")
         self.btn_abrir.configure(state="normal")
         self.progressbar.set(0)
@@ -1532,6 +1680,7 @@ class ImportadorFotosApp(ctk.CTk):
         link_pasta = self.obter_link_drive_selecionado()
 
         # Inicia a thread de upload em segundo plano para não travar a UI
+        self.upload_em_andamento = True
         thread_upload = threading.Thread(
             target=self.processar_upload_drive, 
             args=(caminho_credenciais, link_pasta), 
@@ -1682,6 +1831,7 @@ class ImportadorFotosApp(ctk.CTk):
         self.after(0, self.finalizar_upload_gui)
 
     def finalizar_upload_gui(self):
+        self.upload_em_andamento = False
         self.btn_iniciar.configure(state="normal")
         self.btn_selecionar.configure(state="normal")
         self.btn_abrir.configure(state="normal")
