@@ -992,8 +992,8 @@ class ImportadorFotosApp(ctk.CTk):
             font=ctk.CTkFont(size=11, weight="bold"), 
             height=26, 
             width=70,
-            fg_color="#34495e", 
-            hover_color="#2c3e50", 
+            fg_color="#27ae60", 
+            hover_color="#219653", 
             command=self.novo_descarregamento
         )
         self.btn_novo.pack(side="left", padx=(0, 5))
