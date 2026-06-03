@@ -430,6 +430,7 @@ class RevisorFotosWindow(ctk.CTkToplevel):
                     erros += 1
             
             self.parent.arquivos_transferidos = self.arquivos.copy()
+            self.parent.registrar_historico(total_selecionadas=len(self.arquivos))
             
             mensagem = f"Limpeza concluída! {sucessos} foto(s) foram apagadas."
             if erros > 0:
@@ -440,6 +441,7 @@ class RevisorFotosWindow(ctk.CTkToplevel):
             self.withdraw()
             self.grab_release()
             messagebox.showinfo("Concluído", "Revisão terminada! Nenhuma foto foi apagada.")
+            self.parent.registrar_historico(total_selecionadas=len(self.arquivos))
             
         self.limpar_eventos_globais()
         self.destroy()
@@ -473,6 +475,156 @@ class RevisorFotosWindow(ctk.CTkToplevel):
                 self.parent.btn_enviar_drive.configure(state="normal")
             self.grab_release()
             self.destroy()
+
+
+class HistoricoDadosWindow(ctk.CTkToplevel):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.parent = parent
+        self.title("Histórico e Dados de Descarregamento")
+        self.geometry("800x550")
+        self.minsize(800, 550)
+        
+        # Foco e grab_set seguro
+        self.focus_force()
+        self.after(100, lambda: self.grab_set() if self.winfo_exists() else None)
+        
+        self.caminho_hist = os.path.join(os.path.dirname(os.path.abspath(__file__)), "historico_downloads.json")
+        self.setup_ui()
+        self.carregar_e_exibir()
+
+    def setup_ui(self):
+        self.grid_rowconfigure(1, weight=1)
+        self.grid_columnconfigure(0, weight=1)
+        
+        # Header
+        self.frame_header = ctk.CTkFrame(self, fg_color="transparent")
+        self.frame_header.grid(row=0, column=0, padx=20, pady=(15, 5), sticky="ew")
+        
+        self.frame_header.grid_columnconfigure(0, weight=1)
+        self.frame_header.grid_columnconfigure(1, weight=0)
+        
+        self.lbl_titulo = ctk.CTkLabel(
+            self.frame_header, 
+            text="Histórico Recente de Transferências", 
+            font=ctk.CTkFont(size=16, weight="bold")
+        )
+        self.lbl_titulo.grid(row=0, column=0, sticky="w")
+        
+        self.btn_limpar = ctk.CTkButton(
+            self.frame_header, 
+            text="🗑️ Limpar Histórico", 
+            width=120,
+            height=28,
+            fg_color="#e74c3c",
+            hover_color="#c0392b",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            command=self.limpar_historico
+        )
+        self.btn_limpar.grid(row=0, column=1, sticky="e")
+        
+        # Scrollable Frame para o histórico
+        self.scroll_lista = ctk.CTkScrollableFrame(self, fg_color="#1a1a1a")
+        self.scroll_lista.grid(row=1, column=0, padx=20, pady=5, sticky="nsew")
+        
+        # Botão Fechar no rodapé
+        self.btn_fechar = ctk.CTkButton(
+            self, 
+            text="Fechar", 
+            height=32,
+            font=ctk.CTkFont(weight="bold"),
+            command=self.fechar_janela
+        )
+        self.btn_fechar.grid(row=2, column=0, padx=20, pady=15, sticky="ew")
+
+    def carregar_e_exibir(self):
+        for widget in self.scroll_lista.winfo_children():
+            widget.destroy()
+            
+        historico = []
+        if os.path.exists(self.caminho_hist):
+            try:
+                with open(self.caminho_hist, 'r', encoding='utf-8') as f:
+                    historico = json.load(f)
+            except Exception:
+                pass
+                
+        if not historico:
+            lbl_vazio = ctk.CTkLabel(
+                self.scroll_lista, 
+                text="Nenhum registro de descarregamento encontrado.", 
+                text_color="gray",
+                font=ctk.CTkFont(size=13)
+            )
+            lbl_vazio.pack(pady=40)
+            return
+            
+        for item in reversed(historico):
+            frame_item = ctk.CTkFrame(self.scroll_lista, fg_color="#2b2b2b")
+            frame_item.pack(fill="x", pady=6, padx=5)
+            
+            data_formatada = item.get("data", "")
+            try:
+                partes = data_formatada.split("-")
+                if len(partes) == 3:
+                    data_formatada = f"{partes[2]}/{partes[1]}/{partes[0]}"
+            except Exception:
+                pass
+                
+            texto_info = (
+                f"📅 {data_formatada} às {item.get('hora', '')}\n"
+                f"👤 Fotógrafo: {item.get('fotografo', '')}\n"
+                f"📥 Copiadas: {item.get('descarregadas', 0)}  |  ✅ Selecionadas: {item.get('selecionadas', 0)}\n"
+                f"📁 Caminho: {item.get('destino', '')}"
+            )
+            
+            lbl_info = ctk.CTkLabel(
+                frame_item, 
+                text=texto_info, 
+                font=ctk.CTkFont(size=12),
+                justify="left",
+                anchor="w"
+            )
+            lbl_info.pack(side="left", padx=15, pady=10, fill="x", expand=True)
+            
+            btn_abrir_pasta = ctk.CTkButton(
+                frame_item, 
+                text="📁 Abrir Pasta", 
+                width=100, 
+                height=28,
+                fg_color="#1f538d", 
+                hover_color="#14375e",
+                font=ctk.CTkFont(size=11, weight="bold"),
+                command=lambda p=item.get('destino', ''): self.abrir_pasta_historico(p)
+            )
+            btn_abrir_pasta.pack(side="right", padx=15, pady=10)
+
+    def abrir_pasta_historico(self, pasta):
+        if not pasta:
+            return
+        if os.path.exists(pasta):
+            if platform.system() == "Windows":
+                os.startfile(pasta)
+            elif platform.system() == "Darwin":
+                subprocess.Popen(["open", pasta])
+            else:
+                subprocess.Popen(["xdg-open", pasta])
+        else:
+            messagebox.showwarning("Pasta Não Encontrada", f"A pasta '{pasta}' não existe ou foi movida/deletada.")
+
+    def limpar_historico(self):
+        confirmar = messagebox.askyesno("Limpar Histórico", "Deseja realmente limpar todo o histórico de dados?")
+        if confirmar:
+            try:
+                if os.path.exists(self.caminho_hist):
+                    os.remove(self.caminho_hist)
+                self.carregar_e_exibir()
+            except Exception as e:
+                messagebox.showerror("Erro", f"Não foi possível limpar o histórico: {e}")
+
+    def fechar_janela(self):
+        self.grab_release()
+        self.destroy()
 
 
 class ConfiguradorDriveWindow(ctk.CTkToplevel):
@@ -746,6 +898,58 @@ class ImportadorFotosApp(ctk.CTk):
     def abrir_configurador_drive(self):
         self.janela_config = ConfiguradorDriveWindow(self)
 
+    def abrir_historico_dados(self):
+        self.janela_dados = HistoricoDadosWindow(self)
+
+    def registrar_historico(self, total_selecionadas=None):
+        try:
+            caminho_hist = os.path.join(os.path.dirname(os.path.abspath(__file__)), "historico_downloads.json")
+            historico = []
+            if os.path.exists(caminho_hist):
+                try:
+                    with open(caminho_hist, 'r', encoding='utf-8') as f:
+                        historico = json.load(f)
+                except Exception:
+                    pass
+            
+            # Se for uma atualização de revisão
+            if total_selecionadas is not None and historico:
+                # Procura a última entrada deste fotógrafo e destino para atualizar
+                for entry in reversed(historico):
+                    if entry.get("fotografo") == self.sessao_fotografo and entry.get("destino") == self.sessao_destino:
+                        entry["selecionadas"] = total_selecionadas
+                        break
+            else:
+                # Nova entrada de descarregamento
+                nome_fotografo = self.entry_nome.get().strip()
+                destino = self.destino_path.get()
+                if self.criar_pasta_fotografo_var.get():
+                    destino = os.path.join(destino, nome_fotografo)
+                
+                # Armazena na sessão
+                self.sessao_fotografo = nome_fotografo
+                self.sessao_destino = destino
+                
+                total_descarregadas = len(self.arquivos_transferidos)
+                
+                hoje = date.today().isoformat()
+                hora = time.strftime("%H:%M:%S")
+                
+                nova_entrada = {
+                    "data": hoje,
+                    "hora": hora,
+                    "fotografo": nome_fotografo,
+                    "descarregadas": total_descarregadas,
+                    "selecionadas": total_descarregadas, # Inicialmente todas
+                    "destino": destino
+                }
+                historico.append(nova_entrada)
+                
+            with open(caminho_hist, 'w', encoding='utf-8') as f:
+                json.dump(historico, f, indent=4, ensure_ascii=False)
+        except Exception as e:
+            print(f"Erro ao registrar histórico: {e}")
+
     def recarregar_combo_drive(self):
         self.pastas_drive = self.carregar_config_pastas()
         valores_menu = ["Raiz do Google Drive (Padrão)"]
@@ -815,9 +1019,26 @@ class ImportadorFotosApp(ctk.CTk):
         )
         self.lbl_titulo.grid(row=0, column=1, sticky="nsew")
 
-        # Compensador invisível à direita para manter o título perfeitamente centralizado
-        self.spacer_header = ctk.CTkLabel(self.frame_header, text="", width=145)
-        self.spacer_header.grid(row=0, column=2, sticky="e")
+        # Container direito do Cabeçalho para o botão Dados (alinhado à direita)
+        self.frame_header_dados = ctk.CTkFrame(self.frame_header, fg_color="transparent")
+        self.frame_header_dados.grid(row=0, column=2, sticky="e")
+
+        # Spacer para empurrar o botão Dados e balancear a largura com o lado esquerdo (145px total)
+        self.spacer_dados = ctk.CTkLabel(self.frame_header_dados, text="", width=75)
+        self.spacer_dados.pack(side="left")
+
+        # Botão de Dados/Métricas
+        self.btn_dados = ctk.CTkButton(
+            self.frame_header_dados, 
+            text="📊 Dados", 
+            font=ctk.CTkFont(size=11, weight="bold"), 
+            height=26, 
+            width=70,
+            fg_color="#34495e", 
+            hover_color="#2c3e50", 
+            command=self.abrir_historico_dados
+        )
+        self.btn_dados.pack(side="right")
 
         self.lbl_status = ctk.CTkLabel(self, text="Aguardando inserção do Cartão SD...", text_color="orange", font=ctk.CTkFont(size=12))
         self.lbl_status.pack(pady=(0, 4))
@@ -1216,6 +1437,7 @@ class ImportadorFotosApp(ctk.CTk):
         
         total_fotos = len(self.arquivos_transferidos)
         if total_fotos > 0:
+            self.registrar_historico()
             self.btn_selecionar.configure(state="normal")
             
             # Garantimos que o botão do Drive comece desabilitado caso o usuário queira revisar as fotos primeiro
