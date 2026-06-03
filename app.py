@@ -1374,24 +1374,28 @@ class ImportadorFotosApp(ctk.CTk):
             arquivos_para_enviar = self.arquivos_transferidos.copy()
             total_arquivos = len(arquivos_para_enviar)
             progresso_atual = 0
+            lock_progresso = threading.Lock()
 
-            for caminho_arquivo in arquivos_para_enviar:
+            def enviar_um_arquivo(caminho_arquivo):
+                nonlocal progresso_atual
                 if not os.path.exists(caminho_arquivo):
-                    progresso_atual += 1
-                    continue
-                
+                    with lock_progresso:
+                        progresso_atual += 1
+                        progresso_geral = progresso_atual / total_arquivos
+                        self.after(0, lambda pg=progresso_geral: self.progressbar.set(pg))
+                    return
+
                 nome_arquivo = os.path.basename(caminho_arquivo)
-                self.after(0, lambda n=nome_arquivo, p=progresso_atual+1, t=total_arquivos: self.lbl_progresso.configure(
-                    text=f"Enviando ({p}/{t}): {n}"
-                ))
                 
+                # Cada thread cria seu próprio client HTTP/service para ser 100% thread-safe
+                service_thread = build('drive', 'v3', credentials=creds)
+
                 file_metadata = {
                     'name': nome_arquivo
                 }
                 if folder_id != 'root':
                     file_metadata['parents'] = [folder_id]
-                
-                # Determina o MIME type com base na extensão
+
                 ext = os.path.splitext(nome_arquivo)[1].lower()
                 if ext in ['.jpg', '.jpeg']:
                     mime = 'image/jpeg'
@@ -1405,27 +1409,27 @@ class ImportadorFotosApp(ctk.CTk):
                     mime = 'application/octet-stream'
 
                 try:
-                    # Envio com MediaFileUpload resumable para suportar fotos pesadas e acompanhar progresso fino
                     media = MediaFileUpload(caminho_arquivo, mimetype=mime, resumable=True)
-                    request = service.files().create(body=file_metadata, media_body=media, fields='id')
+                    request = service_thread.files().create(body=file_metadata, media_body=media, fields='id')
                     
                     response = None
                     while response is None:
                         status, response = request.next_chunk()
-                        if status:
-                            percentual_arquivo = int(status.progress() * 100)
-                            self.after(0, lambda n=nome_arquivo, p=progresso_atual+1, t=total_arquivos, pct=percentual_arquivo: 
-                                self.lbl_progresso.configure(text=f"Enviando ({p}/{t}): {n} ({pct}%)")
-                            )
-                            # Atualiza a barra de progresso do CustomTkinter dinamicamente
-                            progresso_frac = (progresso_atual + status.progress()) / total_arquivos
-                            self.after(0, lambda pf=progresso_frac: self.progressbar.set(pf))
                 except Exception as e:
                     print(f"Erro ao enviar arquivo {nome_arquivo}: {e}")
 
-                progresso_atual += 1
-                progresso_geral = progresso_atual / total_arquivos
-                self.after(0, lambda pg=progresso_geral: self.progressbar.set(pg))
+                with lock_progresso:
+                    progresso_atual += 1
+                    progresso_geral = progresso_atual / total_arquivos
+                    self.after(0, lambda pg=progresso_geral: self.progressbar.set(pg))
+                    self.after(0, lambda p=progresso_atual, t=total_arquivos: self.lbl_progresso.configure(
+                        text=f"Enviando ({p}/{t}) fotos para o Drive..."
+                    ))
+
+            self.after(0, lambda: self.lbl_progresso.configure(text=f"Iniciando envio de {total_arquivos} fotos (2 em paralelo)..."))
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                executor.map(enviar_um_arquivo, arquivos_para_enviar)
 
             self.after(0, lambda: messagebox.showinfo(
                 "Upload Concluído", 
