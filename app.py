@@ -868,6 +868,10 @@ class ImportadorFotosApp(ctk.CTk):
         self.chk_converter = ctk.CTkCheckBox(self, text="Converter RAW para JPEG (Processamento Alta Qualidade)", variable=self.converter_raw_var)
         self.chk_converter.pack(anchor="w", padx=40, pady=(0, 4))
 
+        self.criar_pasta_fotografo_var = ctk.BooleanVar(value=True)
+        self.chk_criar_pasta_fotografo = ctk.CTkCheckBox(self, text="Criar subpasta local com o nome do fotógrafo", variable=self.criar_pasta_fotografo_var)
+        self.chk_criar_pasta_fotografo.pack(anchor="w", padx=40, pady=(0, 4))
+
         self.lbl_progresso = ctk.CTkLabel(self, text="Progresso: 0%")
         self.lbl_progresso.pack(anchor="w", padx=40)
         self.progressbar = ctk.CTkProgressBar(self, width=520, height=8)
@@ -1089,14 +1093,22 @@ class ImportadorFotosApp(ctk.CTk):
         self.btn_abrir.configure(state="disabled")
         
         converter = self.converter_raw_var.get()
+        criar_pasta_fotografo = self.criar_pasta_fotografo_var.get()
         
         # Limpa os arquivos transferidos antes de uma nova importação
         self.arquivos_transferidos.clear()
         
-        thread_copia = threading.Thread(target=self.processar_copia, args=(nome_fotografo, destino, pastas_selecionadas, converter))
+        thread_copia = threading.Thread(
+            target=self.processar_copia, 
+            args=(nome_fotografo, destino, pastas_selecionadas, converter, criar_pasta_fotografo)
+        )
         thread_copia.start()
 
-    def processar_copia(self, nome_fotografo, destino, pastas_selecionadas, converter_raw):
+    def processar_copia(self, nome_fotografo, destino, pastas_selecionadas, converter_raw, criar_pasta_fotografo):
+        if criar_pasta_fotografo:
+            destino = os.path.join(destino, nome_fotografo)
+            
+        os.makedirs(destino, exist_ok=True)
         arquivos_para_copiar = []
         
         for pasta_relativa in pastas_selecionadas:
@@ -1238,6 +1250,12 @@ class ImportadorFotosApp(ctk.CTk):
 
     def abrir_pasta(self):
         destino = self.destino_path.get()
+        nome_fotografo = self.entry_nome.get().strip()
+        if nome_fotografo and self.criar_pasta_fotografo_var.get():
+            destino_sub = os.path.join(destino, nome_fotografo)
+            if os.path.exists(destino_sub):
+                destino = destino_sub
+                
         if destino and os.path.exists(destino):
             if platform.system() == "Windows":
                 os.startfile(destino)
