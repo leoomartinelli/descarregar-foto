@@ -12,7 +12,8 @@ import subprocess
 import rawpy
 import imageio
 import concurrent.futures
-from PIL import Image, ImageOps
+from PIL import Image, ImageOps, ImageFilter, ImageEnhance  # ← adicione ImageFilter, ImageEnhance
+import numpy as np  # ← adicione esta linha
 
 try:
     from google.auth.transport.requests import Request
@@ -213,10 +214,10 @@ class RevisorFotosWindow(ctk.CTkToplevel):
                 if not in_cache:
                     try:
                         ext = os.path.splitext(path)[1].lower()
-                        if ext in ['.cr2', '.nef', '.arw']:
+                        if ext in ['.cr2', '.nef', '.arw', '.cr3']:
                             with rawpy.imread(path) as raw:
                                 # half_size=True é 4 vezes mais rápido e perfeito para renderizar na tela
-                                rgb = raw.postprocess(use_camera_wb=True, half_size=True)
+                                rgb = raw.postprocess(use_camera_wb=True, half_size=True, no_auto_bright=True)
                                 img_pil = Image.fromarray(rgb)
                         else:
                             img_pil = Image.open(path)
@@ -251,9 +252,9 @@ class RevisorFotosWindow(ctk.CTkToplevel):
         # Fallback síncrono caso a thread ainda não tenha carregado
         try:
             ext = os.path.splitext(path)[1].lower()
-            if ext in ['.cr2', '.nef', '.arw']:
+            if ext in ['.cr2', '.nef', '.arw', '.cr3']:
                 with rawpy.imread(path) as raw:
-                    rgb = raw.postprocess(use_camera_wb=True, half_size=True)
+                    rgb = raw.postprocess(use_camera_wb=True, half_size=True, no_auto_bright=True)
                     img_pil = Image.fromarray(rgb)
             else:
                 img_pil = Image.open(path)
@@ -631,43 +632,46 @@ class ConfiguradorDriveWindow(ctk.CTkToplevel):
     def __init__(self, parent):
         super().__init__(parent)
         self.parent = parent
-        self.title("Configurações do Líder - Pastas do Drive")
-        self.geometry("700x600")
-        self.minsize(700, 600)
+        self.title("Configurações do Líder - Pastas")
+        self.geometry("750x650")
+        self.minsize(750, 650)
         
         # Foco e grab_set seguro
         self.focus_force()
         self.after(100, lambda: self.grab_set() if self.winfo_exists() else None)
         
         self.caminho_config = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config_pastas.json")
-        self.pastas = self.carregar_config()
+        self.pastas = []
+        self.pastas_local = []
+        self.carregar_config()
         
         self.setup_ui()
         self.atualizar_lista()
+        self.atualizar_lista_local()
 
     def carregar_config(self):
         if os.path.exists(self.caminho_config):
             try:
                 with open(self.caminho_config, 'r', encoding='utf-8') as f:
                     dados = json.load(f)
-                    if isinstance(dados, dict) and "data" in dados and "pastas" in dados:
+                    if isinstance(dados, dict) and "data" in dados:
                         hoje = date.today().isoformat()
                         if dados["data"] == hoje:
-                            return dados["pastas"]
-                        else:
-                            return []
-                    elif isinstance(dados, list):
-                        return []
+                            self.pastas = dados.get("pastas", [])
+                            self.pastas_local = dados.get("pastas_local", [])
+                            return
             except Exception as e:
                 print(f"Erro ao carregar JSON: {e}")
-        return []
+        self.pastas = []
+        self.pastas_local = []
 
     def salvar_config(self):
         try:
             hoje = date.today().isoformat()
             dados = {
                 "data": hoje,
-                "pastas": self.pastas
+                "pastas": self.pastas,
+                "pastas_local": self.pastas_local
             }
             with open(self.caminho_config, 'w', encoding='utf-8') as f:
                 json.dump(dados, f, indent=4, ensure_ascii=False)
@@ -683,18 +687,30 @@ class ConfiguradorDriveWindow(ctk.CTkToplevel):
         # Título
         self.lbl_titulo = ctk.CTkLabel(
             self, 
-            text="Pastas Pré-configuradas para os Fotógrafos", 
+            text="Configurações do Líder - Pastas Pré-definidas", 
             font=ctk.CTkFont(size=16, weight="bold")
         )
         self.lbl_titulo.grid(row=0, column=0, pady=(15, 5), padx=20, sticky="w")
         
+        # Tabview para separar Google Drive e Computador
+        self.tabview = ctk.CTkTabview(self)
+        self.tabview.grid(row=1, column=0, padx=20, pady=5, sticky="nsew")
+        
+        self.tabview.add("Google Drive")
+        self.tabview.add("Computador")
+        
+        # --- TAB GOOGLE DRIVE ---
+        tab_drive = self.tabview.tab("Google Drive")
+        tab_drive.grid_rowconfigure(0, weight=1)
+        tab_drive.grid_columnconfigure(0, weight=1)
+        
         # Lista de Pastas (Scrollable Frame)
-        self.scroll_lista = ctk.CTkScrollableFrame(self, fg_color="#1a1a1a")
-        self.scroll_lista.grid(row=1, column=0, padx=20, pady=5, sticky="nsew")
+        self.scroll_lista = ctk.CTkScrollableFrame(tab_drive, fg_color="#1a1a1a")
+        self.scroll_lista.grid(row=0, column=0, padx=10, pady=5, sticky="nsew")
         
         # Container de adição de nova pasta
-        self.frame_adicionar = ctk.CTkFrame(self, fg_color="#242424")
-        self.frame_adicionar.grid(row=2, column=0, padx=20, pady=(10, 15), sticky="ew")
+        self.frame_adicionar = ctk.CTkFrame(tab_drive, fg_color="#242424")
+        self.frame_adicionar.grid(row=1, column=0, padx=10, pady=(10, 10), sticky="ew")
         
         self.frame_adicionar.grid_columnconfigure(0, weight=1)
         self.frame_adicionar.grid_columnconfigure(1, weight=0)
@@ -731,8 +747,67 @@ class ConfiguradorDriveWindow(ctk.CTkToplevel):
             command=self.adicionar_pasta
         )
         self.btn_add.grid(row=2, column=1, padx=15, pady=5, sticky="ew")
+        
+        # --- TAB COMPUTADOR ---
+        tab_local = self.tabview.tab("Computador")
+        tab_local.grid_rowconfigure(0, weight=1)
+        tab_local.grid_columnconfigure(0, weight=1)
+        
+        # Lista de Pastas do Computador (Scrollable Frame)
+        self.scroll_lista_local = ctk.CTkScrollableFrame(tab_local, fg_color="#1a1a1a")
+        self.scroll_lista_local.grid(row=0, column=0, padx=10, pady=5, sticky="nsew")
+        
+        # Container de adição de nova pasta do Computador
+        self.frame_adicionar_local = ctk.CTkFrame(tab_local, fg_color="#242424")
+        self.frame_adicionar_local.grid(row=1, column=0, padx=10, pady=(10, 10), sticky="ew")
+        
+        self.frame_adicionar_local.grid_columnconfigure(0, weight=1)
+        self.frame_adicionar_local.grid_columnconfigure(1, weight=0)
+        
+        self.lbl_add_titulo_local = ctk.CTkLabel(
+            self.frame_adicionar_local, 
+            text="Adicionar Nova Pasta do Computador", 
+            font=ctk.CTkFont(weight="bold")
+        )
+        self.lbl_add_titulo_local.grid(row=0, column=0, columnspan=2, padx=15, pady=(10, 5), sticky="w")
+        
+        # Sub-frame para o caminho da pasta
+        self.frame_caminho_local = ctk.CTkFrame(self.frame_adicionar_local, fg_color="transparent")
+        self.frame_caminho_local.grid(row=1, column=0, columnspan=2, padx=15, pady=5, sticky="ew")
+        self.frame_caminho_local.grid_columnconfigure(0, weight=1)
+        
+        self.entry_caminho_local = ctk.CTkEntry(
+            self.frame_caminho_local, 
+            placeholder_text="Caminho da pasta no computador..."
+        )
+        self.entry_caminho_local.grid(row=0, column=0, sticky="ew", padx=(0, 10))
+        
+        self.btn_procurar_local = ctk.CTkButton(
+            self.frame_caminho_local, 
+            text="Procurar...", 
+            width=100,
+            command=self.procurar_caminho_local
+        )
+        self.btn_procurar_local.grid(row=0, column=1, sticky="ew")
+        
+        # Nome personalizado
+        self.entry_nome_local = ctk.CTkEntry(
+            self.frame_adicionar_local, 
+            placeholder_text="Nome de Exibição (Opcional - preenchido automaticamente)"
+        )
+        self.entry_nome_local.grid(row=2, column=0, padx=15, pady=5, sticky="ew")
+        
+        self.btn_add_local = ctk.CTkButton(
+            self.frame_adicionar_local, 
+            text="Adicionar", 
+            fg_color="#2ecc71", 
+            hover_color="#27ae60",
+            font=ctk.CTkFont(weight="bold"),
+            command=self.adicionar_pasta_local
+        )
+        self.btn_add_local.grid(row=2, column=1, padx=15, pady=5, sticky="ew")
 
-        # Botão Fechar no rodapé
+        # Botão Salvar e Fechar no rodapé
         self.btn_salvar_fechar = ctk.CTkButton(
             self, 
             text="Salvar e Fechar", 
@@ -740,7 +815,7 @@ class ConfiguradorDriveWindow(ctk.CTkToplevel):
             font=ctk.CTkFont(weight="bold"),
             command=self.salvar_e_fechar
         )
-        self.btn_salvar_fechar.grid(row=3, column=0, padx=20, pady=(0, 15), sticky="ew")
+        self.btn_salvar_fechar.grid(row=2, column=0, padx=20, pady=(0, 15), sticky="ew")
 
     def obter_nome_pasta_drive(self, link_ou_id):
         if not GOOGLE_DRIVE_DISPONIVEL:
@@ -781,23 +856,19 @@ class ConfiguradorDriveWindow(ctk.CTkToplevel):
             
         nome = self.entry_nome_pasta.get().strip()
         
-        # Se o nome estiver vazio, tentamos obter automaticamente do Drive
         if not nome:
             nome_detectado = self.obter_nome_pasta_drive(link)
             if nome_detectado:
                 nome = nome_detectado
             else:
-                # Fallback: extrai o ID e usa como nome
                 id_pasta = self.parent.extrair_id_pasta_drive(link)
                 nome = f"Pasta ({id_pasta[:8]}...)"
                 
-        # Adiciona à lista
         self.pastas.append({
             "nome": nome,
             "link": link
         })
         
-        # Limpa os campos
         self.entry_link.delete(0, 'end')
         self.entry_nome_pasta.delete(0, 'end')
         
@@ -809,7 +880,6 @@ class ConfiguradorDriveWindow(ctk.CTkToplevel):
             self.atualizar_lista()
 
     def atualizar_lista(self):
-        # Limpa o frame da lista
         for widget in self.scroll_lista.winfo_children():
             widget.destroy()
             
@@ -823,20 +893,23 @@ class ConfiguradorDriveWindow(ctk.CTkToplevel):
             return
             
         for i, item in enumerate(self.pastas):
-            frame_item = ctk.CTkFrame(self.scroll_lista, fg_color="#2b2b2b")
+            frame_item = ctk.CTkFrame(self.scroll_lista, fg_color="#2b2b2b", cursor="hand2")
             frame_item.pack(fill="x", pady=4, padx=5)
             
-            # Texto da pasta
             lbl_info = ctk.CTkLabel(
                 frame_item, 
                 text=f"📁 {item['nome']}\nLink/ID: {item['link']}", 
                 font=ctk.CTkFont(size=12),
                 justify="left",
-                anchor="w"
+                anchor="w",
+                cursor="hand2"
             )
             lbl_info.pack(side="left", padx=10, pady=6, fill="x", expand=True)
             
-            # Botão de remover
+            # Clique para abrir a pasta no Google Drive
+            frame_item.bind("<Button-1>", lambda event, link=item['link']: self.abrir_link_drive(link))
+            lbl_info.bind("<Button-1>", lambda event, link=item['link']: self.abrir_link_drive(link))
+            
             btn_remove = ctk.CTkButton(
                 frame_item, 
                 text="Remover", 
@@ -847,14 +920,151 @@ class ConfiguradorDriveWindow(ctk.CTkToplevel):
                 font=ctk.CTkFont(size=11, weight="bold"),
                 command=lambda idx=i: self.remover_pasta(idx)
             )
-            btn_remove.pack(side="right", padx=10, pady=6)
+            btn_remove.pack(side="right", padx=(5, 10), pady=6)
+
+            btn_abrir = ctk.CTkButton(
+                frame_item, 
+                text="Abrir no Drive", 
+                width=90, 
+                height=24,
+                fg_color="#1f538d", 
+                hover_color="#14375e",
+                font=ctk.CTkFont(size=11, weight="bold"),
+                command=lambda link=item['link']: self.abrir_link_drive(link)
+            )
+            btn_abrir.pack(side="right", padx=(10, 5), pady=6)
+
+    def procurar_caminho_local(self):
+        pasta = filedialog.askdirectory(title="Selecione a pasta do computador")
+        if pasta:
+            self.entry_caminho_local.delete(0, 'end')
+            self.entry_caminho_local.insert(0, pasta)
+            # Preenche automaticamente o nome com o nome da pasta selecionada
+            nome_pasta = os.path.basename(pasta.rstrip("/\\"))
+            if not nome_pasta:
+                nome_pasta = pasta
+            self.entry_nome_local.delete(0, 'end')
+            self.entry_nome_local.insert(0, nome_pasta)
+
+    def adicionar_pasta_local(self):
+        caminho = self.entry_caminho_local.get().strip()
+        if not caminho:
+            messagebox.showwarning("Aviso", "Selecione ou digite o caminho da pasta no computador!")
+            return
+            
+        nome = self.entry_nome_local.get().strip()
+        if not nome:
+            nome = os.path.basename(caminho)
+            if not nome:
+                nome = caminho
+                
+        self.pastas_local.append({
+            "nome": nome,
+            "caminho": caminho
+        })
+        
+        self.entry_caminho_local.delete(0, 'end')
+        self.entry_nome_local.delete(0, 'end')
+        
+        self.atualizar_lista_local()
+
+    def remover_pasta_local(self, index):
+        if 0 <= index < len(self.pastas_local):
+            del self.pastas_local[index]
+            self.atualizar_lista_local()
+
+    def atualizar_lista_local(self):
+        for widget in self.scroll_lista_local.winfo_children():
+            widget.destroy()
+            
+        if not self.pastas_local:
+            lbl_vazio = ctk.CTkLabel(
+                self.scroll_lista_local, 
+                text="Nenhuma pasta local configurada. Adicione uma pasta abaixo.", 
+                text_color="gray"
+            )
+            lbl_vazio.pack(pady=30)
+            return
+            
+        for i, item in enumerate(self.pastas_local):
+            frame_item = ctk.CTkFrame(self.scroll_lista_local, fg_color="#2b2b2b", cursor="hand2")
+            frame_item.pack(fill="x", pady=4, padx=5)
+            
+            lbl_info = ctk.CTkLabel(
+                frame_item, 
+                text=f"📁 {item['nome']}\nCaminho: {item['caminho']}", 
+                font=ctk.CTkFont(size=12),
+                justify="left",
+                anchor="w",
+                cursor="hand2"
+            )
+            lbl_info.pack(side="left", padx=10, pady=6, fill="x", expand=True)
+            
+            # Clique para abrir a pasta local
+            frame_item.bind("<Button-1>", lambda event, caminho=item['caminho']: self.abrir_pasta_local(caminho))
+            lbl_info.bind("<Button-1>", lambda event, caminho=item['caminho']: self.abrir_pasta_local(caminho))
+            
+            btn_remove = ctk.CTkButton(
+                frame_item, 
+                text="Remover", 
+                width=60, 
+                height=24,
+                fg_color="#e74c3c", 
+                hover_color="#c0392b",
+                font=ctk.CTkFont(size=11, weight="bold"),
+                command=lambda idx=i: self.remover_pasta_local(idx)
+            )
+            btn_remove.pack(side="right", padx=(5, 10), pady=6)
+
+            btn_abrir = ctk.CTkButton(
+                frame_item, 
+                text="Abrir Pasta", 
+                width=80, 
+                height=24,
+                fg_color="#1f538d", 
+                hover_color="#14375e",
+                font=ctk.CTkFont(size=11, weight="bold"),
+                command=lambda caminho=item['caminho']: self.abrir_pasta_local(caminho)
+            )
+            btn_abrir.pack(side="right", padx=(10, 5), pady=6)
 
     def salvar_e_fechar(self):
         if self.salvar_config():
-            # Atualiza o dropdown na tela principal
             self.parent.recarregar_combo_drive()
+            self.parent.recarregar_combo_destino()
             self.grab_release()
             self.destroy()
+
+    def abrir_link_drive(self, link_ou_id):
+        if not link_ou_id:
+            return
+        id_pasta = self.parent.extrair_id_pasta_drive(link_ou_id)
+        if id_pasta == 'root':
+            url = "https://drive.google.com/drive/my-drive"
+        else:
+            url = f"https://drive.google.com/drive/folders/{id_pasta}"
+        
+        try:
+            import webbrowser
+            webbrowser.open(url)
+        except Exception as e:
+            messagebox.showerror("Erro", f"Não foi possível abrir o link no navegador: {e}")
+
+    def abrir_pasta_local(self, pasta):
+        if not pasta:
+            return
+        if os.path.exists(pasta):
+            try:
+                if platform.system() == "Windows":
+                    os.startfile(pasta)
+                elif platform.system() == "Darwin":
+                    subprocess.Popen(["open", pasta])
+                else:
+                    subprocess.Popen(["xdg-open", pasta])
+            except Exception as e:
+                messagebox.showerror("Erro", f"Não foi possível abrir a pasta: {e}")
+        else:
+            messagebox.showwarning("Pasta Não Encontrada", f"A pasta '{pasta}' não existe ou foi movida/deletada.")
 
 
 class ImportadorFotosApp(ctk.CTk):
@@ -873,9 +1083,10 @@ class ImportadorFotosApp(ctk.CTk):
         self.checkboxes_pastas = []
         self.arquivos_transferidos = [] # Guarda o caminho de todas as fotos transferidas com sucesso
         
-        # Carrega configuração de pastas do Drive para o líder
+        # Carrega configuração de pastas do Drive e locais para o líder
         self.caminho_config_pastas = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config_pastas.json")
         self.pastas_drive = self.carregar_config_pastas()
+        self.pastas_local = self.carregar_config_pastas_local()
         
         self.setup_ui()
         
@@ -893,6 +1104,19 @@ class ImportadorFotosApp(ctk.CTk):
                             return dados["pastas"]
             except Exception as e:
                 print(f"Erro ao carregar pastas do Drive: {e}")
+        return []
+
+    def carregar_config_pastas_local(self):
+        if os.path.exists(self.caminho_config_pastas):
+            try:
+                with open(self.caminho_config_pastas, 'r', encoding='utf-8') as f:
+                    dados = json.load(f)
+                    if isinstance(dados, dict) and "data" in dados:
+                        hoje = date.today().isoformat()
+                        if dados["data"] == hoje:
+                            return dados.get("pastas_local", [])
+            except Exception as e:
+                print(f"Erro ao carregar pastas locais: {e}")
         return []
 
     def abrir_configurador_drive(self):
@@ -971,6 +1195,38 @@ class ImportadorFotosApp(ctk.CTk):
             if p['nome'] == opcao_selecionada:
                 return p['link']
         return ""
+
+    def recarregar_combo_destino(self):
+        self.pastas_local = self.carregar_config_pastas_local()
+        valores_menu = []
+        for p in self.pastas_local:
+            valores_menu.append(p['nome'])
+        valores_menu.append("Escolher pasta personalizada...")
+        self.combo_destino.configure(values=valores_menu)
+        
+        opcao_atual = self.combo_destino_var.get()
+        if opcao_atual not in valores_menu:
+            if self.pastas_local:
+                self.combo_destino_var.set(self.pastas_local[0]['nome'])
+                self.destino_path.set(self.pastas_local[0]['caminho'])
+            else:
+                self.combo_destino_var.set("Escolher pasta personalizada...")
+                self.destino_path.set("")
+        else:
+            if opcao_atual != "Escolher pasta personalizada...":
+                for p in self.pastas_local:
+                    if p['nome'] == opcao_atual:
+                        self.destino_path.set(p['caminho'])
+                        break
+
+    def ao_alterar_destino_combo(self, opcao):
+        if opcao == "Escolher pasta personalizada...":
+            self.selecionar_destino()
+        else:
+            for p in self.pastas_local:
+                if p['nome'] == opcao:
+                    self.destino_path.set(p['caminho'])
+                    break
 
     def setup_ui(self):
         # Frame do Cabeçalho para alinhar o título e os botões Novo e Config no topo
@@ -1075,19 +1331,52 @@ class ImportadorFotosApp(ctk.CTk):
         self.lbl_destino = ctk.CTkLabel(self, text="Pasta de Destino no Computador:")
         self.lbl_destino.pack(anchor="w", padx=40)
         
-        self.frame_destino = ctk.CTkFrame(self, fg_color="transparent")
-        self.frame_destino.pack(fill="x", padx=40, pady=(0, 4))
+        self.frame_destino_combo = ctk.CTkFrame(self, fg_color="transparent")
+        self.frame_destino_combo.pack(fill="x", padx=40, pady=(0, 2))
         
-        self.entry_destino = ctk.CTkEntry(self.frame_destino, textvariable=self.destino_path, width=400, height=28, state="readonly")
-        self.entry_destino.pack(side="left", padx=(0, 10), fill="x", expand=True)
+        valores_destino = []
+        for p in self.pastas_local:
+            valores_destino.append(p['nome'])
+        valores_destino.append("Escolher pasta personalizada...")
         
-        self.btn_destino = ctk.CTkButton(self.frame_destino, text="Procurar...", width=110, height=28, command=self.selecionar_destino)
+        if self.pastas_local:
+            opcao_inicial = self.pastas_local[0]['nome']
+            self.destino_path.set(self.pastas_local[0]['caminho'])
+        else:
+            opcao_inicial = "Escolher pasta personalizada..."
+            self.destino_path.set("")
+            
+        self.combo_destino_var = ctk.StringVar(value=opcao_inicial)
+        self.combo_destino = ctk.CTkOptionMenu(
+            self.frame_destino_combo, 
+            values=valores_destino,
+            variable=self.combo_destino_var,
+            command=self.ao_alterar_destino_combo,
+            width=400,
+            height=28
+        )
+        self.combo_destino.pack(side="left", padx=(0, 10), fill="x", expand=True)
+        
+        self.btn_destino = ctk.CTkButton(
+            self.frame_destino_combo, 
+            text="Procurar...", 
+            width=110, 
+            height=28, 
+            command=self.selecionar_destino
+        )
         self.btn_destino.pack(side="left")
 
-        # Checkbox atualizada para refletir a alta qualidade
-        self.converter_raw_var = ctk.BooleanVar(value=False)
-        self.chk_converter = ctk.CTkCheckBox(self, text="Converter RAW para JPEG (Processamento Alta Qualidade)", variable=self.converter_raw_var)
-        self.chk_converter.pack(anchor="w", padx=40, pady=(0, 4))
+        # Exibe o caminho completo selecionado (somente leitura)
+        self.entry_destino = ctk.CTkEntry(
+            self, 
+            textvariable=self.destino_path, 
+            width=520, 
+            height=28, 
+            state="readonly"
+        )
+        self.entry_destino.pack(pady=(2, 4), padx=40, fill="x")
+
+
 
         self.criar_pasta_fotografo_var = ctk.BooleanVar(value=True)
         self.chk_criar_pasta_fotografo = ctk.CTkCheckBox(self, text="Criar subpasta local com o nome do fotógrafo", variable=self.criar_pasta_fotografo_var)
@@ -1173,16 +1462,27 @@ class ImportadorFotosApp(ctk.CTk):
         self.btn_enviar_drive.pack(pady=(2, 10), padx=40, fill="x")
 
     def monitorar_cartao(self):
-        drives_iniciais = [p.device for p in psutil.disk_partitions()]
+        # Mapeia device -> mountpoint para os drives inicialmente montados
+        drives_iniciais = {p.device: p.mountpoint for p in psutil.disk_partitions() if p.mountpoint}
         while True:
             time.sleep(1.5)
-            drives_atuais = [p.device for p in psutil.disk_partitions()]
-            novos_drives = [d for d in drives_atuais if d not in drives_iniciais]
-            if novos_drives:
-                self.drive_path = novos_drives[0]
+            drives_atuais = {p.device: p.mountpoint for p in psutil.disk_partitions() if p.mountpoint}
+            novos_devices = [d for d in drives_atuais if d not in drives_iniciais]
+            
+            if novos_devices:
+                device_novo = novos_devices[0]
+                mountpoint_novo = drives_atuais[device_novo]
+                
+                self.drive_path = mountpoint_novo
                 self.cartao_detectado = True
                 self.origem_manual = False
-                self.atualizar_ui_cartao_detectado(self.drive_path)
+                
+                # Atualiza a UI de forma segura na thread principal
+                self.after(0, lambda path=self.drive_path: self.atualizar_ui_cartao_detectado(path))
+                
+                # Abre a pasta DCIM (ou raiz) do cartão no gerenciador de arquivos do sistema
+                self.abrir_pasta_dcim(self.drive_path)
+                
                 drives_iniciais = drives_atuais
             elif len(drives_atuais) < len(drives_iniciais):
                 # Se o usuário escolheu uma origem manual, ignoramos a remoção de outros drives
@@ -1191,8 +1491,22 @@ class ImportadorFotosApp(ctk.CTk):
                 else:
                     self.drive_path = ""
                     self.cartao_detectado = False
-                    self.atualizar_ui_cartao_removido()
+                    self.after(0, self.atualizar_ui_cartao_removido)
                     drives_iniciais = drives_atuais
+
+    def abrir_pasta_dcim(self, drive):
+        caminho_dcim = os.path.join(drive, "DCIM")
+        alvo = caminho_dcim if os.path.exists(caminho_dcim) and os.path.isdir(caminho_dcim) else drive
+        if os.path.exists(alvo) and os.path.isdir(alvo):
+            try:
+                if platform.system() == "Windows":
+                    os.startfile(alvo)
+                elif platform.system() == "Darwin":
+                    subprocess.Popen(["open", alvo])
+                else:
+                    subprocess.Popen(["xdg-open", alvo])
+            except Exception as e:
+                print(f"Erro ao abrir pasta {alvo}: {e}")
 
     def selecionar_origem_manual(self):
         pasta = filedialog.askdirectory(title="Selecione a pasta de origem das fotos (Cartão ou Pasta)")
@@ -1262,6 +1576,19 @@ class ImportadorFotosApp(ctk.CTk):
         pasta = filedialog.askdirectory(title="Selecione onde salvar as fotos")
         if pasta:
             self.destino_path.set(pasta)
+            self.combo_destino_var.set("Escolher pasta personalizada...")
+        else:
+            if not self.destino_path.get():
+                self.combo_destino_var.set("Escolher pasta personalizada...")
+            else:
+                encontrou = False
+                for p in self.pastas_local:
+                    if p['caminho'] == self.destino_path.get():
+                        self.combo_destino_var.set(p['nome'])
+                        encontrou = True
+                        break
+                if not encontrou:
+                    self.combo_destino_var.set("Escolher pasta personalizada...")
 
     def novo_descarregamento(self):
         # Limpa o nome do fotógrafo
@@ -1283,6 +1610,14 @@ class ImportadorFotosApp(ctk.CTk):
         self.btn_enviar_drive.configure(state="disabled")
         self.btn_iniciar.configure(state="normal")
         
+        # Reseta a pasta do Computador para a primeira predefinida ou personalizada
+        if self.pastas_local:
+            self.combo_destino_var.set(self.pastas_local[0]['nome'])
+            self.destino_path.set(self.pastas_local[0]['caminho'])
+        else:
+            self.combo_destino_var.set("Escolher pasta personalizada...")
+            self.destino_path.set("")
+            
         # Reseta e recarrega os cartões/pastas de origem
         if self.cartao_detectado and self.drive_path:
             self.atualizar_ui_cartao_detectado(self.drive_path, e_manual=self.origem_manual)
@@ -1312,8 +1647,9 @@ class ImportadorFotosApp(ctk.CTk):
         self.btn_iniciar.configure(state="disabled")
         self.btn_selecionar.configure(state="disabled")
         self.btn_abrir.configure(state="disabled")
+        self.combo_destino.configure(state="disabled")
+        self.btn_destino.configure(state="disabled")
         
-        converter = self.converter_raw_var.get()
         criar_pasta_fotografo = self.criar_pasta_fotografo_var.get()
         
         # Limpa os arquivos transferidos antes de uma nova importação
@@ -1321,11 +1657,11 @@ class ImportadorFotosApp(ctk.CTk):
         
         thread_copia = threading.Thread(
             target=self.processar_copia, 
-            args=(nome_fotografo, destino, pastas_selecionadas, converter, criar_pasta_fotografo)
+            args=(nome_fotografo, destino, pastas_selecionadas, criar_pasta_fotografo)
         )
         thread_copia.start()
 
-    def processar_copia(self, nome_fotografo, destino, pastas_selecionadas, converter_raw, criar_pasta_fotografo):
+    def processar_copia(self, nome_fotografo, destino, pastas_selecionadas, criar_pasta_fotografo):
         if criar_pasta_fotografo:
             destino = os.path.join(destino, nome_fotografo)
             
@@ -1337,7 +1673,7 @@ class ImportadorFotosApp(ctk.CTk):
             if os.path.exists(pasta_origem):
                 for root, dirs, files in os.walk(pasta_origem):
                     for file in files:
-                        if file.lower().endswith(('.png', '.jpg', '.jpeg', '.cr2', '.nef', '.arw', '.mp4')):
+                        if file.lower().endswith(('.png', '.jpg', '.jpeg', '.cr2', '.nef', '.arw', '.cr3', '.mp4')):
                             arquivos_para_copiar.append(os.path.join(root, file))
 
         total_arquivos = len(arquivos_para_copiar)
@@ -1345,6 +1681,35 @@ class ImportadorFotosApp(ctk.CTk):
             self.after(0, lambda: messagebox.showinfo("Informação", "Nenhuma imagem encontrada nas pastas selecionadas."))
             self.after(0, lambda: self.btn_iniciar.configure(state="normal"))
             return
+
+        # Verifica se há fotos em formato RAW nas pastas selecionadas
+        tem_raw = any(f.lower().endswith(('.cr2', '.nef', '.arw', '.cr3')) for f in arquivos_para_copiar)
+        if tem_raw:
+            confirmar = [True]
+            event = threading.Event()
+            
+            def exibir_aviso():
+                res = messagebox.askyesno(
+                    "Fotos em RAW Detectadas",
+                    "Atenção: Foram detectadas fotos em formato RAW (.cr3, .cr2, .nef, .arw) nas pastas selecionadas.\n\n"
+                    "Elas serão copiadas no formato original. Deseja prosseguir com o descarregamento?"
+                )
+                confirmar[0] = res
+                event.set()
+                
+            self.after(0, exibir_aviso)
+            event.wait()
+            
+            if not confirmar[0]:
+                def reativar_controles():
+                    self.btn_iniciar.configure(state="normal")
+                    self.combo_destino.configure(state="normal")
+                    self.btn_destino.configure(state="normal")
+                    if self.arquivos_transferidos:
+                        self.btn_selecionar.configure(state="normal")
+                        self.btn_abrir.configure(state="normal")
+                self.after(0, reativar_controles)
+                return
 
         # Ordena os arquivos por data de modificação para garantir ordem cronológica na renomeação sequencial
         try:
@@ -1381,13 +1746,8 @@ class ImportadorFotosApp(ctk.CTk):
             idx, caminho_arquivo = item
             nome_original = os.path.basename(caminho_arquivo)
             _, ext = os.path.splitext(nome_original)
-            eh_raw = ext.lower() in ['.cr2', '.nef', '.arw']
             
-            if converter_raw and eh_raw:
-                ext_final = ".jpg"
-            else:
-                ext_final = ext.lower()
-                
+            ext_final = ext.lower()
             num_formatado = f"{idx + contador_inicio:0{digitos}d}"
             novo_nome = f"{nome_fotografo}_{num_formatado}{ext_final}"
             caminho_destino = os.path.join(destino, novo_nome)
@@ -1398,20 +1758,14 @@ class ImportadorFotosApp(ctk.CTk):
                 caminho_destino = os.path.join(destino, f"{nome_base}_{contador}{ext_base}")
                 contador += 1
 
-            try:
-                if converter_raw and eh_raw:
-                    # Revelação real em alta qualidade usando a CPU
-                    with rawpy.imread(caminho_arquivo) as raw:
-                        rgb = raw.postprocess(use_camera_wb=True)
-                        imageio.imsave(caminho_destino, rgb)
-                else:
-                    # Cópia direta do arquivo
-                    shutil.copy2(caminho_arquivo, caminho_destino)
+            try:    
+                # Cópia direta do arquivo original (RAW, PNG, JPG, MP4, etc.)
+                shutil.copy2(caminho_arquivo, caminho_destino)
                 
                 # Armazena os arquivos transferidos com sucesso de forma thread-safe
                 with lock:
                     # Só adicionamos imagens legíveis (ignoramos vídeos no revisor se houver)
-                    if caminho_destino.lower().endswith(('.png', '.jpg', '.jpeg', '.cr2', '.nef', '.arw')):
+                    if caminho_destino.lower().endswith(('.png', '.jpg', '.jpeg', '.cr2', '.nef', '.arw', '.cr3')):
                         self.arquivos_transferidos.append(caminho_destino)
             except Exception as e:
                 print(f"Erro ao processar {nome_original}: {e}")
@@ -1432,6 +1786,8 @@ class ImportadorFotosApp(ctk.CTk):
     def finalizar_transferencia_gui(self):
         self.btn_iniciar.configure(state="normal")
         self.btn_abrir.configure(state="normal")
+        self.combo_destino.configure(state="normal")
+        self.btn_destino.configure(state="normal")
         self.progressbar.set(0)
         self.lbl_progresso.configure(text="Progresso: 0%")
         
@@ -1528,6 +1884,8 @@ class ImportadorFotosApp(ctk.CTk):
         self.btn_enviar_drive.configure(state="disabled")
         self.btn_manual.configure(state="disabled")
         self.combo_drive.configure(state="disabled")
+        self.combo_destino.configure(state="disabled")
+        self.btn_destino.configure(state="disabled")
 
         link_pasta = self.obter_link_drive_selecionado()
 
@@ -1641,7 +1999,7 @@ class ImportadorFotosApp(ctk.CTk):
                     mime = 'image/jpeg'
                 elif ext == '.png':
                     mime = 'image/png'
-                elif ext in ['.cr2', '.nef', '.arw']:
+                elif ext in ['.cr2', '.nef', '.arw', '.cr3']:
                     mime = 'image/x-raw'
                 elif ext == '.mp4':
                     mime = 'video/mp4'
@@ -1688,6 +2046,8 @@ class ImportadorFotosApp(ctk.CTk):
         self.btn_enviar_drive.configure(state="normal")
         self.btn_manual.configure(state="normal")
         self.combo_drive.configure(state="normal")
+        self.combo_destino.configure(state="normal")
+        self.btn_destino.configure(state="normal")
         self.progressbar.set(0)
         self.lbl_progresso.configure(text="Progresso: 0%")
 
