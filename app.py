@@ -15,16 +15,7 @@ import concurrent.futures
 from PIL import Image, ImageOps, ImageFilter, ImageEnhance  # ← adicione ImageFilter, ImageEnhance
 import numpy as np  # ← adicione esta linha
 
-try:
-    from google.auth.transport.requests import Request
-    from google.oauth2.credentials import Credentials
-    from google_auth_oauthlib.flow import InstalledAppFlow
-    from googleapiclient.discovery import build
-    from googleapiclient.errors import HttpError
-    from googleapiclient.http import MediaFileUpload
-    GOOGLE_DRIVE_DISPONIVEL = True
-except ImportError:
-    GOOGLE_DRIVE_DISPONIVEL = False
+GOOGLE_DRIVE_DISPONIVEL = False
 
 
 # Configurações de tema do CustomTkinter
@@ -450,10 +441,6 @@ class RevisorFotosWindow(ctk.CTkToplevel):
         # Garante que os botões na janela principal sejam reativados corretamente
         self.parent.btn_selecionar.configure(state="normal")
         self.parent.btn_abrir.configure(state="normal")
-        if self.parent.arquivos_transferidos:
-            self.parent.btn_enviar_drive.configure(state="normal")
-        else:
-            self.parent.btn_enviar_drive.configure(state="disabled")
 
         # Abre a pasta contendo as fotos finais selecionadas
         self.parent.abrir_pasta()
@@ -472,8 +459,6 @@ class RevisorFotosWindow(ctk.CTkToplevel):
             self.limpar_eventos_globais()
             self.parent.btn_selecionar.configure(state="normal")
             self.parent.btn_abrir.configure(state="normal")
-            if self.parent.arquivos_transferidos:
-                self.parent.btn_enviar_drive.configure(state="normal")
             self.grab_release()
             self.destroy()
 
@@ -646,7 +631,6 @@ class ConfiguradorDriveWindow(ctk.CTkToplevel):
         self.carregar_config()
         
         self.setup_ui()
-        self.atualizar_lista()
         self.atualizar_lista_local()
 
     def carregar_config(self):
@@ -687,79 +671,18 @@ class ConfiguradorDriveWindow(ctk.CTkToplevel):
         # Título
         self.lbl_titulo = ctk.CTkLabel(
             self, 
-            text="Configurações do Líder - Pastas Pré-definidas", 
+            text="Configurações do Líder - Pastas Locais Pré-definidas", 
             font=ctk.CTkFont(size=16, weight="bold")
         )
         self.lbl_titulo.grid(row=0, column=0, pady=(15, 5), padx=20, sticky="w")
         
-        # Tabview para separar Google Drive e Computador
-        self.tabview = ctk.CTkTabview(self)
-        self.tabview.grid(row=1, column=0, padx=20, pady=5, sticky="nsew")
-        
-        self.tabview.add("Google Drive")
-        self.tabview.add("Computador")
-        
-        # --- TAB GOOGLE DRIVE ---
-        tab_drive = self.tabview.tab("Google Drive")
-        tab_drive.grid_rowconfigure(0, weight=1)
-        tab_drive.grid_columnconfigure(0, weight=1)
-        
-        # Lista de Pastas (Scrollable Frame)
-        self.scroll_lista = ctk.CTkScrollableFrame(tab_drive, fg_color="#1a1a1a")
-        self.scroll_lista.grid(row=0, column=0, padx=10, pady=5, sticky="nsew")
-        
-        # Container de adição de nova pasta
-        self.frame_adicionar = ctk.CTkFrame(tab_drive, fg_color="#242424")
-        self.frame_adicionar.grid(row=1, column=0, padx=10, pady=(10, 10), sticky="ew")
-        
-        self.frame_adicionar.grid_columnconfigure(0, weight=1)
-        self.frame_adicionar.grid_columnconfigure(1, weight=0)
-        
-        # Campos de entrada
-        self.lbl_add_titulo = ctk.CTkLabel(
-            self.frame_adicionar, 
-            text="Adicionar Nova Pasta do Google Drive", 
-            font=ctk.CTkFont(weight="bold")
-        )
-        self.lbl_add_titulo.grid(row=0, column=0, columnspan=2, padx=15, pady=(10, 5), sticky="w")
-        
-        # Link do Drive
-        self.entry_link = ctk.CTkEntry(
-            self.frame_adicionar, 
-            placeholder_text="Cole o link ou ID da pasta do Google Drive aqui..."
-        )
-        self.entry_link.grid(row=1, column=0, columnspan=2, padx=15, pady=5, sticky="ew")
-        
-        # Nome personalizado (opcional)
-        self.entry_nome_pasta = ctk.CTkEntry(
-            self.frame_adicionar, 
-            placeholder_text="Nome da Pasta (Deixe vazio para buscar automaticamente do Drive)"
-        )
-        self.entry_nome_pasta.grid(row=2, column=0, padx=15, pady=5, sticky="ew")
-        
-        # Botões de ação de adição
-        self.btn_add = ctk.CTkButton(
-            self.frame_adicionar, 
-            text="Adicionar", 
-            fg_color="#2ecc71", 
-            hover_color="#27ae60",
-            font=ctk.CTkFont(weight="bold"),
-            command=self.adicionar_pasta
-        )
-        self.btn_add.grid(row=2, column=1, padx=15, pady=5, sticky="ew")
-        
-        # --- TAB COMPUTADOR ---
-        tab_local = self.tabview.tab("Computador")
-        tab_local.grid_rowconfigure(0, weight=1)
-        tab_local.grid_columnconfigure(0, weight=1)
-        
         # Lista de Pastas do Computador (Scrollable Frame)
-        self.scroll_lista_local = ctk.CTkScrollableFrame(tab_local, fg_color="#1a1a1a")
-        self.scroll_lista_local.grid(row=0, column=0, padx=10, pady=5, sticky="nsew")
+        self.scroll_lista_local = ctk.CTkScrollableFrame(self, fg_color="#1a1a1a")
+        self.scroll_lista_local.grid(row=1, column=0, padx=20, pady=5, sticky="nsew")
         
         # Container de adição de nova pasta do Computador
-        self.frame_adicionar_local = ctk.CTkFrame(tab_local, fg_color="#242424")
-        self.frame_adicionar_local.grid(row=1, column=0, padx=10, pady=(10, 10), sticky="ew")
+        self.frame_adicionar_local = ctk.CTkFrame(self, fg_color="#242424")
+        self.frame_adicionar_local.grid(row=2, column=0, padx=20, pady=(5, 10), sticky="ew")
         
         self.frame_adicionar_local.grid_columnconfigure(0, weight=1)
         self.frame_adicionar_local.grid_columnconfigure(1, weight=0)
@@ -815,124 +738,9 @@ class ConfiguradorDriveWindow(ctk.CTkToplevel):
             font=ctk.CTkFont(weight="bold"),
             command=self.salvar_e_fechar
         )
-        self.btn_salvar_fechar.grid(row=2, column=0, padx=20, pady=(0, 15), sticky="ew")
+        self.btn_salvar_fechar.grid(row=3, column=0, padx=20, pady=(0, 15), sticky="ew")
 
-    def obter_nome_pasta_drive(self, link_ou_id):
-        if not GOOGLE_DRIVE_DISPONIVEL:
-            return None
-        folder_id = self.parent.extrair_id_pasta_drive(link_ou_id)
-        if folder_id == 'root':
-            return "Raiz do Google Drive"
-            
-        caminho_credenciais = os.path.join(os.path.dirname(os.path.abspath(__file__)), "credentials.json")
-        if not os.path.exists(caminho_credenciais):
-            return None
-            
-        SCOPES = ['https://www.googleapis.com/auth/drive']
-        token_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'token.json')
-        creds = None
-        if os.path.exists(token_path):
-            try:
-                creds = Credentials.from_authorized_user_file(token_path, SCOPES)
-            except Exception:
-                pass
-        
-        if not creds or not creds.valid:
-            return None
-            
-        try:
-            service = build('drive', 'v3', credentials=creds)
-            pasta_meta = service.files().get(fileId=folder_id, fields='name').execute()
-            return pasta_meta.get('name')
-        except Exception as e:
-            print(f"Erro ao obter nome da pasta no Drive: {e}")
-            return None
 
-    def adicionar_pasta(self):
-        link = self.entry_link.get().strip()
-        if not link:
-            messagebox.showwarning("Aviso", "Insira o link ou ID da pasta do Google Drive!")
-            return
-            
-        nome = self.entry_nome_pasta.get().strip()
-        
-        if not nome:
-            nome_detectado = self.obter_nome_pasta_drive(link)
-            if nome_detectado:
-                nome = nome_detectado
-            else:
-                id_pasta = self.parent.extrair_id_pasta_drive(link)
-                nome = f"Pasta ({id_pasta[:8]}...)"
-                
-        self.pastas.append({
-            "nome": nome,
-            "link": link
-        })
-        
-        self.entry_link.delete(0, 'end')
-        self.entry_nome_pasta.delete(0, 'end')
-        
-        self.atualizar_lista()
-
-    def remover_pasta(self, index):
-        if 0 <= index < len(self.pastas):
-            del self.pastas[index]
-            self.atualizar_lista()
-
-    def atualizar_lista(self):
-        for widget in self.scroll_lista.winfo_children():
-            widget.destroy()
-            
-        if not self.pastas:
-            lbl_vazio = ctk.CTkLabel(
-                self.scroll_lista, 
-                text="Nenhuma pasta configurada. Adicione uma pasta abaixo.", 
-                text_color="gray"
-            )
-            lbl_vazio.pack(pady=30)
-            return
-            
-        for i, item in enumerate(self.pastas):
-            frame_item = ctk.CTkFrame(self.scroll_lista, fg_color="#2b2b2b", cursor="hand2")
-            frame_item.pack(fill="x", pady=4, padx=5)
-            
-            lbl_info = ctk.CTkLabel(
-                frame_item, 
-                text=f"📁 {item['nome']}\nLink/ID: {item['link']}", 
-                font=ctk.CTkFont(size=12),
-                justify="left",
-                anchor="w",
-                cursor="hand2"
-            )
-            lbl_info.pack(side="left", padx=10, pady=6, fill="x", expand=True)
-            
-            # Clique para abrir a pasta no Google Drive
-            frame_item.bind("<Button-1>", lambda event, link=item['link']: self.abrir_link_drive(link))
-            lbl_info.bind("<Button-1>", lambda event, link=item['link']: self.abrir_link_drive(link))
-            
-            btn_remove = ctk.CTkButton(
-                frame_item, 
-                text="Remover", 
-                width=60, 
-                height=24,
-                fg_color="#e74c3c", 
-                hover_color="#c0392b",
-                font=ctk.CTkFont(size=11, weight="bold"),
-                command=lambda idx=i: self.remover_pasta(idx)
-            )
-            btn_remove.pack(side="right", padx=(5, 10), pady=6)
-
-            btn_abrir = ctk.CTkButton(
-                frame_item, 
-                text="Abrir no Drive", 
-                width=90, 
-                height=24,
-                fg_color="#1f538d", 
-                hover_color="#14375e",
-                font=ctk.CTkFont(size=11, weight="bold"),
-                command=lambda link=item['link']: self.abrir_link_drive(link)
-            )
-            btn_abrir.pack(side="right", padx=(10, 5), pady=6)
 
     def procurar_caminho_local(self):
         pasta = filedialog.askdirectory(title="Selecione a pasta do computador")
@@ -1030,25 +838,9 @@ class ConfiguradorDriveWindow(ctk.CTkToplevel):
 
     def salvar_e_fechar(self):
         if self.salvar_config():
-            self.parent.recarregar_combo_drive()
             self.parent.recarregar_combo_destino()
             self.grab_release()
             self.destroy()
-
-    def abrir_link_drive(self, link_ou_id):
-        if not link_ou_id:
-            return
-        id_pasta = self.parent.extrair_id_pasta_drive(link_ou_id)
-        if id_pasta == 'root':
-            url = "https://drive.google.com/drive/my-drive"
-        else:
-            url = f"https://drive.google.com/drive/folders/{id_pasta}"
-        
-        try:
-            import webbrowser
-            webbrowser.open(url)
-        except Exception as e:
-            messagebox.showerror("Erro", f"Não foi possível abrir o link no navegador: {e}")
 
     def abrir_pasta_local(self, pasta):
         if not pasta:
@@ -1083,28 +875,14 @@ class ImportadorFotosApp(ctk.CTk):
         self.checkboxes_pastas = []
         self.arquivos_transferidos = [] # Guarda o caminho de todas as fotos transferidas com sucesso
         
-        # Carrega configuração de pastas do Drive e locais para o líder
+        # Carrega configuração de pastas locais para o líder
         self.caminho_config_pastas = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config_pastas.json")
-        self.pastas_drive = self.carregar_config_pastas()
         self.pastas_local = self.carregar_config_pastas_local()
         
         self.setup_ui()
         
         self.monitor_thread = threading.Thread(target=self.monitorar_cartao, daemon=True)
         self.monitor_thread.start()
-
-    def carregar_config_pastas(self):
-        if os.path.exists(self.caminho_config_pastas):
-            try:
-                with open(self.caminho_config_pastas, 'r', encoding='utf-8') as f:
-                    dados = json.load(f)
-                    if isinstance(dados, dict) and "data" in dados and "pastas" in dados:
-                        hoje = date.today().isoformat()
-                        if dados["data"] == hoje:
-                            return dados["pastas"]
-            except Exception as e:
-                print(f"Erro ao carregar pastas do Drive: {e}")
-        return []
 
     def carregar_config_pastas_local(self):
         if os.path.exists(self.caminho_config_pastas):
@@ -1174,27 +952,7 @@ class ImportadorFotosApp(ctk.CTk):
         except Exception as e:
             print(f"Erro ao registrar histórico: {e}")
 
-    def recarregar_combo_drive(self):
-        self.pastas_drive = self.carregar_config_pastas()
-        valores_menu = ["Raiz do Google Drive (Padrão)"]
-        for p in self.pastas_drive:
-            valores_menu.append(p['nome'])
-        self.combo_drive.configure(values=valores_menu)
-        
-        # Se a opção atualmente selecionada não existir mais na nova lista, reseta para o padrão
-        opcao_atual = self.combo_drive_var.get()
-        if opcao_atual not in valores_menu:
-            self.combo_drive_var.set(valores_menu[0])
 
-    def obter_link_drive_selecionado(self):
-        opcao_selecionada = self.combo_drive_var.get()
-        if opcao_selecionada == "Raiz do Google Drive (Padrão)":
-            return ""
-        # Procura a pasta correspondente pelo nome
-        for p in self.pastas_drive:
-            if p['nome'] == opcao_selecionada:
-                return p['link']
-        return ""
 
     def recarregar_combo_destino(self):
         self.pastas_local = self.carregar_config_pastas_local()
@@ -1429,37 +1187,7 @@ class ImportadorFotosApp(ctk.CTk):
         )
         self.btn_abrir.pack(side="right", fill="x", expand=True)
 
-        # Campo para Pasta de Destino no Google Drive (Dropbox)
-        self.lbl_drive_link = ctk.CTkLabel(self, text="Pasta de Destino no Google Drive:")
-        self.lbl_drive_link.pack(anchor="w", padx=40, pady=(2, 1))
-        
-        # Carrega os valores para o OptionMenu
-        valores_menu = ["Raiz do Google Drive (Padrão)"]
-        for p in self.pastas_drive:
-            valores_menu.append(p['nome'])
-            
-        self.combo_drive_var = ctk.StringVar(value=valores_menu[0])
-        self.combo_drive = ctk.CTkOptionMenu(
-            self, 
-            values=valores_menu,
-            variable=self.combo_drive_var,
-            width=520,
-            height=28
-        )
-        self.combo_drive.pack(pady=(0, 4), padx=40, fill="x")
 
-        # Botão para enviar as fotos selecionadas para o Google Drive
-        self.btn_enviar_drive = ctk.CTkButton(
-            self, 
-            text="📤 Enviar Fotos Selecionadas para o Google Drive", 
-            height=36, 
-            font=ctk.CTkFont(size=12, weight="bold"), 
-            fg_color="#4285F4", 
-            hover_color="#357ae8", 
-            command=self.iniciar_upload_drive, 
-            state="disabled"
-        )
-        self.btn_enviar_drive.pack(pady=(2, 10), padx=40, fill="x")
 
     def monitorar_cartao(self):
         # Mapeia device -> mountpoint para os drives inicialmente montados
@@ -1594,9 +1322,6 @@ class ImportadorFotosApp(ctk.CTk):
         # Limpa o nome do fotógrafo
         self.entry_nome.delete(0, 'end')
         
-        # Reseta a pasta do Drive para a padrão (Raiz)
-        self.combo_drive_var.set("Raiz do Google Drive (Padrão)")
-        
         # Reseta os arquivos transferidos
         self.arquivos_transferidos.clear()
         
@@ -1607,7 +1332,6 @@ class ImportadorFotosApp(ctk.CTk):
         # Desabilita botões secundários
         self.btn_selecionar.configure(state="disabled")
         self.btn_abrir.configure(state="disabled")
-        self.btn_enviar_drive.configure(state="disabled")
         self.btn_iniciar.configure(state="normal")
         
         # Reseta a pasta do Computador para a primeira predefinida ou personalizada
@@ -1796,9 +1520,6 @@ class ImportadorFotosApp(ctk.CTk):
             self.registrar_historico()
             self.btn_selecionar.configure(state="normal")
             
-            # Garantimos que o botão do Drive comece desabilitado caso o usuário queira revisar as fotos primeiro
-            self.btn_enviar_drive.configure(state="disabled")
-            
             # Pergunta se o usuário gostaria de abrir o painel de seleção diretamente
             revisar = messagebox.askyesno(
                 "Transferência Finalizada",
@@ -1807,11 +1528,7 @@ class ImportadorFotosApp(ctk.CTk):
             )
             if revisar:
                 self.abrir_revisor()
-            else:
-                # Se ele escolheu NÃO revisar, pode subir tudo imediatamente
-                self.btn_enviar_drive.configure(state="normal")
         else:
-            self.btn_enviar_drive.configure(state="disabled")
             messagebox.showinfo("Concluído", "A cópia foi finalizada, mas nenhuma imagem compatível com revisão foi transferida.")
 
     def abrir_revisor(self):
@@ -1821,7 +1538,6 @@ class ImportadorFotosApp(ctk.CTk):
             
         self.btn_selecionar.configure(state="disabled")
         self.btn_abrir.configure(state="disabled")
-        self.btn_enviar_drive.configure(state="disabled") # Desabilita o Drive durante a revisão
         
         # Abre a tela de revisão
         self.janela_revisao = RevisorFotosWindow(self, self.arquivos_transferidos, self.destino_path.get())
@@ -1842,214 +1558,7 @@ class ImportadorFotosApp(ctk.CTk):
             else:
                 subprocess.Popen(["xdg-open", destino])
 
-    def extrair_id_pasta_drive(self, link_ou_id):
-        link_ou_id = link_ou_id.strip()
-        if not link_ou_id:
-            return 'root'
-        if "drive.google.com" in link_ou_id:
-            partes = link_ou_id.split("/folders/")
-            if len(partes) > 1:
-                # Pega a parte após "/folders/" e divide por "?" ou "/" para isolar o ID puro
-                subparte = partes[1].split("?")[0].split("/")[0]
-                return subparte
-        return link_ou_id
 
-    def iniciar_upload_drive(self):
-        if not GOOGLE_DRIVE_DISPONIVEL:
-            messagebox.showerror(
-                "Bibliotecas Faltando", 
-                "As bibliotecas da API do Google Drive não estão disponíveis.\n\n"
-                "Por favor, execute: pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib"
-            )
-            return
-
-        if not self.arquivos_transferidos:
-            messagebox.showwarning("Aviso", "Não há fotos disponíveis para upload!")
-            return
-
-        caminho_credenciais = os.path.join(os.path.dirname(os.path.abspath(__file__)), "credentials.json")
-        if not os.path.exists(caminho_credenciais):
-            messagebox.showerror(
-                "Credenciais Não Encontradas", 
-                "O arquivo 'credentials.json' não foi encontrado na pasta do aplicativo!\n\n"
-                "Por favor, siga o guia 'google_drive_credentials_guide.md' para gerar "
-                "suas credenciais e salve o arquivo como 'credentials.json' na pasta do programa."
-            )
-            return
-
-        # Desabilita botões para evitar ações concorrentes durante o upload
-        self.btn_iniciar.configure(state="disabled")
-        self.btn_selecionar.configure(state="disabled")
-        self.btn_abrir.configure(state="disabled")
-        self.btn_enviar_drive.configure(state="disabled")
-        self.btn_manual.configure(state="disabled")
-        self.combo_drive.configure(state="disabled")
-        self.combo_destino.configure(state="disabled")
-        self.btn_destino.configure(state="disabled")
-
-        link_pasta = self.obter_link_drive_selecionado()
-
-        # Inicia a thread de upload em segundo plano para não travar a UI
-        thread_upload = threading.Thread(
-            target=self.processar_upload_drive, 
-            args=(caminho_credenciais, link_pasta), 
-            daemon=True
-        )
-        thread_upload.start()
-
-    def processar_upload_drive(self, caminho_credenciais, link_pasta):
-        SCOPES = ['https://www.googleapis.com/auth/drive']
-        token_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'token.json')
-        creds = None
-        
-        # Carrega o token.json se existir e for válido
-        if os.path.exists(token_path):
-            try:
-                creds = Credentials.from_authorized_user_file(token_path, SCOPES)
-            except Exception as e:
-                print(f"Erro ao carregar token.json: {e}")
-                creds = None
-
-        # Se não houver credenciais válidas, realiza o login
-        if not creds or not creds.valid:
-            if creds and creds.expired and creds.refresh_token:
-                try:
-                    self.after(0, lambda: self.lbl_progresso.configure(text="Atualizando acesso com o Google..."))
-                    creds.refresh(Request())
-                except Exception:
-                    creds = None
-            
-            if not creds:
-                # UX: Avisa o usuário que abrirá o navegador antes que a janela surja
-                self.after(0, lambda: messagebox.showinfo(
-                    "Autenticação do Google", 
-                    "Uma janela do seu navegador de internet será aberta para que você faça login com sua conta do Google "
-                    "e conceda acesso para o aplicativo enviar as fotos.\n\n"
-                    "Por favor, confirme a autorização no seu navegador."
-                ))
-                try:
-                    self.after(0, lambda: self.lbl_progresso.configure(text="Aguardando autorização no navegador..."))
-                    flow = InstalledAppFlow.from_client_secrets_file(caminho_credenciais, SCOPES)
-                    creds = flow.run_local_server(port=0)
-                    
-                    # Salva as credenciais para evitar logins futuros
-                    with open(token_path, 'w') as token_file:
-                        token_file.write(creds.to_json())
-                except Exception as e:
-                    self.after(0, lambda: messagebox.showerror("Erro de Autenticação", f"Não foi possível autenticar: {e}"))
-                    self.after(0, self.finalizar_upload_gui)
-                    return
-
-        try:
-            self.after(0, lambda: self.lbl_progresso.configure(text="Conectando ao Google Drive..."))
-            service = build('drive', 'v3', credentials=creds)
-
-            # Resolve a pasta de destino
-            folder_id = self.extrair_id_pasta_drive(link_pasta)
-            nome_destino_exibicao = "a raiz do seu Google Drive"
-            
-            if folder_id != 'root':
-                self.after(0, lambda: self.lbl_progresso.configure(text="Acessando pasta no Google Drive..."))
-                try:
-                    pasta_meta = service.files().get(fileId=folder_id, fields='name, mimeType').execute()
-                    if pasta_meta.get('mimeType') != 'application/vnd.google-apps.folder':
-                        self.after(0, lambda: messagebox.showwarning(
-                            "Aviso", 
-                            "O link fornecido não pertence a uma pasta do Google Drive. As fotos serão enviadas para a raiz."
-                        ))
-                        folder_id = 'root'
-                    else:
-                        nome_destino_exibicao = f"a pasta '{pasta_meta.get('name')}'"
-                except Exception as e:
-                    self.after(0, lambda: messagebox.showerror(
-                        "Pasta Não Encontrada", 
-                        "Não foi possível acessar a pasta fornecida no Google Drive.\n\n"
-                        "Verifique se o link está correto, se a pasta não foi excluída e se você possui permissões de gravação nela."
-                    ))
-                    self.after(0, self.finalizar_upload_gui)
-                    return
-
-            arquivos_para_enviar = self.arquivos_transferidos.copy()
-            total_arquivos = len(arquivos_para_enviar)
-            progresso_atual = 0
-            lock_progresso = threading.Lock()
-
-            def enviar_um_arquivo(caminho_arquivo):
-                nonlocal progresso_atual
-                if not os.path.exists(caminho_arquivo):
-                    with lock_progresso:
-                        progresso_atual += 1
-                        progresso_geral = progresso_atual / total_arquivos
-                        self.after(0, lambda pg=progresso_geral: self.progressbar.set(pg))
-                    return
-
-                nome_arquivo = os.path.basename(caminho_arquivo)
-                
-                # Cada thread cria seu próprio client HTTP/service para ser 100% thread-safe
-                service_thread = build('drive', 'v3', credentials=creds)
-
-                file_metadata = {
-                    'name': nome_arquivo
-                }
-                if folder_id != 'root':
-                    file_metadata['parents'] = [folder_id]
-
-                ext = os.path.splitext(nome_arquivo)[1].lower()
-                if ext in ['.jpg', '.jpeg']:
-                    mime = 'image/jpeg'
-                elif ext == '.png':
-                    mime = 'image/png'
-                elif ext in ['.cr2', '.nef', '.arw', '.cr3']:
-                    mime = 'image/x-raw'
-                elif ext == '.mp4':
-                    mime = 'video/mp4'
-                else:
-                    mime = 'application/octet-stream'
-
-                try:
-                    media = MediaFileUpload(caminho_arquivo, mimetype=mime, resumable=True)
-                    request = service_thread.files().create(body=file_metadata, media_body=media, fields='id')
-                    
-                    response = None
-                    while response is None:
-                        status, response = request.next_chunk()
-                except Exception as e:
-                    print(f"Erro ao enviar arquivo {nome_arquivo}: {e}")
-
-                with lock_progresso:
-                    progresso_atual += 1
-                    progresso_geral = progresso_atual / total_arquivos
-                    self.after(0, lambda pg=progresso_geral: self.progressbar.set(pg))
-                    self.after(0, lambda p=progresso_atual, t=total_arquivos: self.lbl_progresso.configure(
-                        text=f"Enviando ({p}/{t}) fotos para o Drive..."
-                    ))
-
-            self.after(0, lambda: self.lbl_progresso.configure(text=f"Iniciando envio de {total_arquivos} fotos (2 em paralelo)..."))
-
-            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-                executor.map(enviar_um_arquivo, arquivos_para_enviar)
-
-            self.after(0, lambda: messagebox.showinfo(
-                "Upload Concluído", 
-                f"Sucesso! {total_arquivos} fotos foram enviadas com sucesso para {nome_destino_exibicao} no seu Google Drive!"
-            ))
-
-        except Exception as e:
-            self.after(0, lambda: messagebox.showerror("Erro de Upload", f"Erro durante o envio para o Google Drive: {e}"))
-
-        self.after(0, self.finalizar_upload_gui)
-
-    def finalizar_upload_gui(self):
-        self.btn_iniciar.configure(state="normal")
-        self.btn_selecionar.configure(state="normal")
-        self.btn_abrir.configure(state="normal")
-        self.btn_enviar_drive.configure(state="normal")
-        self.btn_manual.configure(state="normal")
-        self.combo_drive.configure(state="normal")
-        self.combo_destino.configure(state="normal")
-        self.btn_destino.configure(state="normal")
-        self.progressbar.set(0)
-        self.lbl_progresso.configure(text="Progresso: 0%")
 
 if __name__ == "__main__":
     app = ImportadorFotosApp()
