@@ -63,22 +63,36 @@ Este projeto vai além de um simples copiador de arquivos:
 
 ---
 
-## 📦 Instalação
+## 📦 Instalação e Execução Simplificada
 
-Clone o repositório:
+Para uma instalação e execução rápida no Windows ou macOS (sem precisar compilar em executável), consulte o guia completo com scripts automatizados de um clique:
 
-    git clone https://github.com/leoomartinelli/descarregar-foto.git
-    cd descarregar-foto
-
-Instale as dependências:
-
-    pip install -r requirements.txt
+👉 **[Guia de Execução Simplificada (COMO_RODAR.md)](COMO_RODAR.md)**
 
 ---
 
-## ▶️ Como executar
+## 💻 Instalação Manual (Alternativa)
 
-    python app.py
+Clone o repositório:
+
+```bash
+git clone https://github.com/leoomartinelli/descarregar-foto.git
+cd descarregar-foto
+```
+
+Instale as dependências:
+
+```bash
+pip install -r requirements.txt
+```
+
+---
+
+## ▶️ Como executar manualmente
+
+```bash
+python app.py
+```
 
 ---
 
