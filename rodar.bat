@@ -9,10 +9,10 @@ echo.
 
 set "PYTHON_EXE=python"
 
-:: Verifica se o Python esta instalado no PATH
+rem Verifica se o Python esta instalado no PATH
 where python >nul 2>nul
 if %errorlevel% neq 0 (
-    :: Tenta verificar se ja esta instalado na pasta local padrao do usuario
+    rem Tenta verificar se ja esta instalado na pasta local padrao do usuario
     if exist "%LocalAppData%\Programs\Python\Python310\python.exe" (
         echo [INFO] Python encontrado no caminho local do usuario.
         set "PYTHON_EXE=%LocalAppData%\Programs\Python\Python310\python.exe"
@@ -30,7 +30,7 @@ if %errorlevel% neq 0 (
         echo [INFO] Iniciando o download automatico do Python 3.10...
         echo.
         
-        :: Baixa o instalador do site oficial
+        rem Baixa o instalador do site oficial
         curl -L -o "%temp%\python_installer.exe" https://www.python.org/ftp/python/3.10.11/python-3.10.11-amd64.exe
         if %errorlevel% neq 0 (
             echo [ERRO] Falha ao baixar o instalador do Python.
@@ -58,7 +58,7 @@ if %errorlevel% neq 0 (
     )
 )
 
-:: Verifica/Cria o ambiente virtual (.venv)
+rem Verifica/Cria o ambiente virtual (.venv)
 if not exist .venv (
     echo [INFO] Criando ambiente virtual (.venv) para isolar as dependencias...
     "%PYTHON_EXE%" -m venv .venv
@@ -69,11 +69,11 @@ if not exist .venv (
     )
 )
 
-:: Ativa o ambiente virtual
+rem Ativa o ambiente virtual
 echo [INFO] Ativando ambiente virtual...
 call .venv\Scripts\activate
 
-:: Atualiza o pip e instala as dependencias
+rem Atualiza o pip e instala as dependencias
 echo [INFO] Verificando e instalando dependencias (requirements.txt)...
 python -m pip install --upgrade pip -q
 pip install -r requirements.txt
@@ -83,7 +83,7 @@ if %errorlevel% neq 0 (
     exit /b
 )
 
-:: Executa a aplicacao
+rem Executa a aplicacao
 echo.
 echo [INFO] Iniciando o aplicativo...
 python app.py
@@ -91,4 +91,5 @@ if %errorlevel% neq 0 (
     echo.
     echo [ERRO] O aplicativo encerrou com erro.
     pause
+    exit /b
 )
