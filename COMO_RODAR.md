@@ -56,16 +56,6 @@ Para rodar no Mac, o macOS precisa de uma permissão inicial rápida de seguran�
 
 ---
 
-## ☁️ Configurando o Google Drive (Opcional)
-
-Se o aplicativo precisar enviar as fotos diretamente para o Google Drive:
-
-1.  Siga o guia detalhado em `google_drive_credentials_guide.md` para gerar as credenciais do seu projeto no Google Cloud Console.
-2.  Coloque o arquivo baixado e renomeado `credentials.json` na mesma pasta do arquivo `app.py`.
-3.  Ao usar o botão de upload para o Drive pela primeira vez, uma página de login abrirá no navegador para autorizar a conta. Após autorizar, o arquivo `token.json` será gerado localmente e o processo será 100% automático dali em diante.
-
----
-
 ## ❓ Resolução de Problemas Comuns
 
 ### 1. Mensagem de erro "Tkinter" ou "Tcl/Tk" no macOS 🔴
