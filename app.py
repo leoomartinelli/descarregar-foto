@@ -14,6 +14,9 @@ import imageio
 import concurrent.futures
 from PIL import Image, ImageOps, ImageFilter, ImageEnhance  # ← adicione ImageFilter, ImageEnhance
 import numpy as np  # ← adicione esta linha
+import socket
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import urllib.parse
 
 try:
     from google.auth.transport.requests import Request
@@ -1163,6 +1166,224 @@ def sincronizar_credenciais_env():
         print(f"Erro ao sincronizar credenciais do .env: {e}")
 
 
+def obter_ip_local():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(('8.8.8.8', 80))
+        ip = s.getsockname()[0]
+    except Exception:
+        ip = '127.0.0.1'
+    finally:
+        s.close()
+    return ip
+
+def mesclar_estatisticas(stats_lider, stats_auxiliares):
+    mapa_categorias = {}
+    
+    def adicionar_stats(lista_cat):
+        for cat in lista_cat:
+            cat_nome = cat.get("nome")
+            if not cat_nome:
+                continue
+            if cat_nome not in mapa_categorias:
+                mapa_categorias[cat_nome] = {}
+            
+            for fotog in cat.get("fotografos", []):
+                f_nome = fotog.get("nome_fotografo")
+                f_total = fotog.get("total_fotos", 0)
+                if f_nome:
+                    mapa_categorias[cat_nome][f_nome] = mapa_categorias[cat_nome].get(f_nome, 0) + f_total
+                    
+    adicionar_stats(stats_lider)
+    for sa in stats_auxiliares:
+        adicionar_stats(sa)
+        
+    resultado = []
+    for cat_nome, fotogs_map in mapa_categorias.items():
+        fotogs_list = [{"nome_fotografo": name, "total_fotos": total} for name, total in fotogs_map.items()]
+        resultado.append({
+            "nome": cat_nome,
+            "fotografos": fotogs_list
+        })
+    return resultado
+
+class AppRequestHandler(BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        pass
+
+    def do_GET(self):
+        app = self.server.app_instance
+        parsed_url = urllib.parse.urlparse(self.path)
+        
+        if parsed_url.path == "/preset":
+            if app.active_servir:
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps(app.active_servir).encode("utf-8"))
+            else:
+                self.send_response(404)
+                self.end_headers()
+                self.wfile.write(b"No active servir event")
+                
+        elif parsed_url.path == "/stats":
+            stats = app.obter_estatisticas_locais()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"categorias": stats}).encode("utf-8"))
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def do_POST(self):
+        app = self.server.app_instance
+        parsed_url = urllib.parse.urlparse(self.path)
+        content_length = int(self.headers.get('Content-Length', 0))
+        body = self.rfile.read(content_length) if content_length > 0 else b""
+        
+        if parsed_url.path == "/register":
+            try:
+                dados = json.loads(body.decode("utf-8"))
+                ip = dados.get("ip")
+                nome = dados.get("nome")
+                porta = dados.get("port", 50007)
+                if ip and nome:
+                    app.auxiliar_stations[ip] = {
+                        "nome": nome,
+                        "port": porta,
+                        "last_seen": time.time()
+                    }
+                    app.after(0, app.atualizar_lista_auxiliares_ui)
+                    
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"status": "ok"}).encode("utf-8"))
+                else:
+                    self.send_response(400)
+                    self.end_headers()
+            except Exception as e:
+                self.send_response(500)
+                self.end_headers()
+                self.wfile.write(str(e).encode("utf-8"))
+                
+        elif parsed_url.path == "/finalize":
+            app.after(0, app.finalizar_servir_remotamente)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"status": "ok"}).encode("utf-8"))
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+def iniciar_servidor_lan(app, porta_inicial=50007):
+    porta = porta_inicial
+    server = None
+    while porta < porta_inicial + 10:
+        try:
+            server = HTTPServer(('', porta), AppRequestHandler)
+            server.app_instance = app
+            app.local_port = porta
+            break
+        except Exception:
+            porta += 1
+            
+    if not server:
+        print("Erro: Não foi possível iniciar o servidor LAN.")
+        return
+        
+    app.lan_server = server
+    print(f"Servidor LAN rodando na porta {porta}")
+    try:
+        server.serve_forever()
+    except Exception:
+        pass
+
+def parar_servidor_lan(app):
+    if hasattr(app, 'lan_server') and app.lan_server:
+        try:
+            app.lan_server.shutdown()
+            app.lan_server.server_close()
+        except Exception as e:
+            print(f"Erro ao fechar servidor: {e}")
+        app.lan_server = None
+
+def transmitir_broadcast_lider(app):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    sock.settimeout(1.0)
+    
+    while True:
+        if not hasattr(app, 'network_mode') or app.network_mode != "lider":
+            break
+        if not app.active_servir:
+            time.sleep(2.0)
+            continue
+            
+        try:
+            ip_local = obter_ip_local()
+            nome_evento = app.active_servir.get("nome", "Servir")
+            evento_id = app.active_servir.get("id", "0")
+            msg = f"SERVIR_LEADER:{ip_local}:{app.local_port}:{nome_evento}:{evento_id}"
+            sock.sendto(msg.encode("utf-8"), ('<broadcast>', 50008))
+        except Exception as e:
+            print(f"Erro no broadcast UDP: {e}")
+            
+        time.sleep(3.0)
+    sock.close()
+
+def escutar_broadcast_auxiliar(app):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+    except AttributeError:
+        pass
+    
+    try:
+        sock.bind(('', 50008))
+    except Exception as e:
+        print(f"Erro ao bindar porta UDP: {e}")
+        sock.close()
+        return
+        
+    sock.settimeout(1.0)
+    
+    while True:
+        if not hasattr(app, 'network_mode') or app.network_mode != "auxiliar":
+            break
+        if app.active_servir:
+            time.sleep(2.0)
+            continue
+            
+        try:
+            data, addr = sock.recvfrom(1024)
+            msg = data.decode("utf-8")
+            if msg.startswith("SERVIR_LEADER:"):
+                partes = msg.split(":")
+                if len(partes) >= 5:
+                    ip_lider = partes[1]
+                    port_lider = int(partes[2])
+                    nome_evento = partes[3]
+                    evento_id = partes[4]
+                    
+                    app.lider_detectado = {
+                        "ip": ip_lider,
+                        "port": port_lider,
+                        "nome_evento": nome_evento,
+                        "evento_id": evento_id
+                    }
+                    app.after(0, app.atualizar_lider_detectado_ui)
+        except socket.timeout:
+            continue
+        except Exception as e:
+            print(f"Erro ao receber broadcast: {e}")
+            
+    sock.close()
+
+
 class ImportadorFotosApp(ctk.CTk):
     def __init__(self):
         sincronizar_credenciais_env()
@@ -1182,6 +1403,17 @@ class ImportadorFotosApp(ctk.CTk):
         self.active_servir = None       # Dia de servir ativo atualmente
         self.servir_em_edicao = None    # Dia de servir sendo editado atualmente
         
+        # Configurações de Rede Local (LAN)
+        self.network_mode = "lider"      # "lider" ou "auxiliar"
+        self.local_port = 50007
+        self.auxiliar_stations = {}      # ip -> {"nome": nome, "port": port, "last_seen": timestamp}
+        self.lider_detectado = None      # {"ip": ip, "port": port, "nome_evento": nome, "evento_id": id}
+        
+        self.lan_server_thread = None
+        self.lan_broadcast_thread = None
+        
+        self.protocol("WM_DELETE_WINDOW", self.fechar_aplicativo)
+
         # Pasta padrão dentro do diretório do app
         self.destino_padrao_app = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Fotos_Sistema")
         os.makedirs(self.destino_padrao_app, exist_ok=True)
@@ -1192,6 +1424,7 @@ class ImportadorFotosApp(ctk.CTk):
         self.pastas_drive = self.carregar_config_pastas()
         self.pastas_local = self.carregar_config_pastas_local()
         
+        self.iniciar_servicos_rede()
         self.mostrar_pagina_inicial()
         
         self.monitor_thread = threading.Thread(target=self.monitorar_cartao, daemon=True)
@@ -1240,6 +1473,156 @@ class ImportadorFotosApp(ctk.CTk):
         except Exception as e:
             print(f"Erro ao salvar dias de servir: {e}")
             return False
+
+    def iniciar_servicos_rede(self):
+        self.parar_servicos_rede()
+        
+        # Ambos rodam um servidor HTTP local
+        self.lan_server_thread = threading.Thread(target=iniciar_servidor_lan, args=(self,), daemon=True)
+        self.lan_server_thread.start()
+        
+        if self.network_mode == "lider":
+            self.lan_broadcast_thread = threading.Thread(target=transmitir_broadcast_lider, args=(self,), daemon=True)
+            self.lan_broadcast_thread.start()
+        else:
+            self.lider_detectado = None
+            self.lan_broadcast_thread = threading.Thread(target=escutar_broadcast_auxiliar, args=(self,), daemon=True)
+            self.lan_broadcast_thread.start()
+
+    def parar_servicos_rede(self):
+        parar_servidor_lan(self)
+        self.auxiliar_stations.clear()
+        self.lider_detectado = None
+
+    def fechar_aplicativo(self):
+        self.parar_servicos_rede()
+        self.destroy()
+
+    def finalizar_servir_remotamente(self):
+        self.active_servir = None
+        self.arquivos_transferidos.clear()
+        messagebox.showinfo("Servir Finalizado", "O computador Líder finalizou o Dia de Servir.\nSua estação foi desconectada automaticamente.")
+        self.mostrar_pagina_inicial()
+
+    def obter_estatisticas_locais(self):
+        if not self.active_servir:
+            return []
+        nome_servir = self.active_servir.get('nome')
+        destino_base = self.destino_path.get()
+        pasta_raiz_servir = os.path.join(destino_base, nome_servir)
+        
+        categorias_detectadas = {}
+        if os.path.exists(pasta_raiz_servir):
+            for item in os.listdir(pasta_raiz_servir):
+                caminho_item = os.path.join(pasta_raiz_servir, item)
+                if os.path.isdir(caminho_item):
+                    categoria_nome = item
+                    categorias_detectadas[categoria_nome] = []
+                    
+                    for subitem in os.listdir(caminho_item):
+                        caminho_subitem = os.path.join(caminho_item, subitem)
+                        if os.path.isdir(caminho_subitem):
+                            fotografo_dir_nome = subitem
+                            
+                            total_fotos = 0
+                            for root, _, files in os.walk(caminho_subitem):
+                                for file_name in files:
+                                    if file_name.lower().endswith(('.png', '.jpg', '.jpeg', '.cr2', '.nef', '.arw', '.cr3', '.mp4')):
+                                        total_fotos += 1
+                            
+                            categorias_detectadas[categoria_nome].append({
+                                "nome_fotografo": fotografo_dir_nome,
+                                "total_fotos": total_fotos
+                            })
+        
+        lista_categorias = []
+        for cat_nome, fotogs in categorias_detectadas.items():
+            lista_categorias.append({
+                "nome": cat_nome,
+                "fotografos": fotogs
+            })
+        return lista_categorias
+
+    def mudar_modo_rede(self, modo_selecionado):
+        if "Líder" in modo_selecionado:
+            self.network_mode = "lider"
+        else:
+            self.network_mode = "auxiliar"
+            
+        self.iniciar_servicos_rede()
+        self.mostrar_pagina_inicial()
+
+    def reiniciar_rede_botao(self):
+        self.iniciar_servicos_rede()
+        messagebox.showinfo("Rede Local", "Serviços de rede local reiniciados com sucesso!")
+        self.mostrar_pagina_inicial()
+
+    def atualizar_lider_detectado_ui(self):
+        if not hasattr(self, 'frame_sync_auxiliar') or not self.frame_sync_auxiliar.winfo_exists():
+            return
+            
+        if self.lider_detectado:
+            self.lbl_status_busca.configure(text="🟢 LÍDER ENCONTRADO!", text_color="lightgreen")
+            self.lbl_lider_nome.configure(text=f"Evento: {self.lider_detectado['nome_evento']}")
+            self.lbl_lider_ip.configure(text=f"Líder IP: {self.lider_detectado['ip']}:{self.lider_detectado['port']}")
+            self.frame_dados_lider.pack(pady=10)
+            self.btn_sincronizar.configure(state="normal")
+        else:
+            self.lbl_status_busca.configure(text="🔍 Procurando Líder na rede local...", text_color="orange")
+            self.frame_dados_lider.pack_forget()
+            self.btn_sincronizar.configure(state="disabled")
+
+    def conectar_e_sincronizar_lider(self):
+        if not self.lider_detectado:
+            return
+            
+        ip = self.lider_detectado["ip"]
+        port = self.lider_detectado["port"]
+        
+        import requests
+        try:
+            ip_local = obter_ip_local()
+            nome_pc = platform.node() or "Estação Auxiliar"
+            reg_url = f"http://{ip}:{port}/register"
+            reg_payload = {"ip": ip_local, "nome": nome_pc, "port": self.local_port}
+            
+            res_reg = requests.post(reg_url, json=reg_payload, timeout=3.0)
+            if res_reg.status_code != 200:
+                messagebox.showerror("Erro de Sincronização", f"Não foi possível se registrar no líder: Código {res_reg.status_code}")
+                return
+                
+            preset_url = f"http://{ip}:{port}/preset"
+            res_preset = requests.get(preset_url, timeout=3.0)
+            if res_preset.status_code == 200:
+                preset = res_preset.json()
+                self.active_servir = preset
+                self.ativar_servir_dia(preset)
+            else:
+                messagebox.showerror("Erro de Sincronização", f"Não foi possível obter os dados do evento: Código {res_preset.status_code}")
+        except Exception as e:
+            messagebox.showerror("Erro de Conexão", f"Falha ao conectar ao Líder em {ip}:{port}:\n{e}")
+
+    def atualizar_lista_auxiliares_ui(self):
+        if not hasattr(self, 'scroll_auxiliares') or not self.scroll_auxiliares.winfo_exists():
+            return
+            
+        for widget in self.scroll_auxiliares.winfo_children():
+            widget.destroy()
+            
+        if not self.auxiliar_stations:
+            lbl_vazio = ctk.CTkLabel(self.scroll_auxiliares, text="Nenhuma estação conectada", font=ctk.CTkFont(size=11), text_color="gray")
+            lbl_vazio.pack(pady=10)
+            return
+            
+        for ip, info in self.auxiliar_stations.items():
+            frame_item = ctk.CTkFrame(self.scroll_auxiliares, fg_color="#1a1a1a", height=32, corner_radius=6)
+            frame_item.pack(fill="x", pady=2, padx=2)
+            
+            lbl_info = ctk.CTkLabel(frame_item, text=f"💻 {info['nome']} ({ip})", font=ctk.CTkFont(size=11, weight="bold"))
+            lbl_info.pack(side="left", padx=8, pady=4)
+            
+            lbl_status = ctk.CTkLabel(frame_item, text="🟢 Conectado", font=ctk.CTkFont(size=10), text_color="lightgreen")
+            lbl_status.pack(side="right", padx=8, pady=4)
 
     def obter_ou_criar_pasta_drive(self, service, nome_pasta, pai_id):
         query = f"name = '{nome_pasta}' and '{pai_id}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
@@ -1344,6 +1727,7 @@ class ImportadorFotosApp(ctk.CTk):
         frame_esquerda = ctk.CTkFrame(frame_corpo, fg_color="#1e1e1e", corner_radius=12, border_width=1, border_color="#2b2b2b")
         frame_esquerda.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
         frame_esquerda.grid_rowconfigure(1, weight=1)
+        frame_esquerda.grid_rowconfigure(3, weight=0)
         frame_esquerda.grid_columnconfigure(0, weight=1)
         
         lbl_esq_titulo = ctk.CTkLabel(
@@ -1368,125 +1752,218 @@ class ImportadorFotosApp(ctk.CTk):
             command=lambda: self.ativar_servir_dia(None)
         )
         btn_avulso.grid(row=2, column=0, sticky="ew", padx=15, pady=12)
+
+        # Se for líder, cria o frame de estações conectadas na coluna esquerda
+        if self.network_mode == "lider":
+            self.frame_rede_lider = ctk.CTkFrame(frame_esquerda, fg_color="#141414", corner_radius=8, border_width=1, border_color="#2b2b2b")
+            self.frame_rede_lider.grid(row=3, column=0, sticky="ew", padx=15, pady=(0, 12))
+            
+            lbl_rede_titulo = ctk.CTkLabel(self.frame_rede_lider, text="📡 Estações Conectadas (LAN)", font=ctk.CTkFont(size=12, weight="bold"), text_color="#3498db")
+            lbl_rede_titulo.pack(anchor="w", padx=10, pady=(8, 2))
+            
+            self.lbl_rede_status = ctk.CTkLabel(self.frame_rede_lider, text=f"IP: {obter_ip_local()}:{self.local_port} | 🟢 Ativo", font=ctk.CTkFont(size=11), text_color="gray")
+            self.lbl_rede_status.pack(anchor="w", padx=10)
+            
+            btn_reiniciar_rede = ctk.CTkButton(
+                self.frame_rede_lider,
+                text="🔄 Reiniciar Rede",
+                font=ctk.CTkFont(size=10, weight="bold"),
+                height=22,
+                fg_color="#34495e",
+                hover_color="#2c3e50",
+                command=self.reiniciar_rede_botao
+            )
+            btn_reiniciar_rede.pack(anchor="w", padx=10, pady=(4, 4))
+            
+            self.scroll_auxiliares = ctk.CTkScrollableFrame(self.frame_rede_lider, height=80, fg_color="transparent")
+            self.scroll_auxiliares.pack(fill="x", padx=5, pady=5)
+            self.atualizar_lista_auxiliares_ui()
         
-        # --- COLUNA DIREITA: CRIAR NOVO DIA DO SERVIR ---
+        # --- COLUNA DIREITA: CRIAR OU SINCRONIZAR DIA DO SERVIR ---
         frame_direita = ctk.CTkFrame(frame_corpo, fg_color="#1a1a1a", corner_radius=12, border_width=1, border_color="#2b2b2b")
         frame_direita.grid(row=0, column=1, sticky="nsew", padx=(10, 0))
         frame_direita.grid_columnconfigure(0, weight=1)
-        frame_direita.grid_rowconfigure(1, weight=1)
+        frame_direita.grid_rowconfigure(0, weight=0)
+        frame_direita.grid_rowconfigure(1, weight=0)
+        frame_direita.grid_rowconfigure(2, weight=1)
+        
+        # Segmented Button para alternar modo de rede
+        self.segmented_rede = ctk.CTkSegmentedButton(
+            frame_direita, 
+            values=["Líder (Host)", "Auxiliar (Estação)"],
+            command=self.mudar_modo_rede
+        )
+        self.segmented_rede.set("Líder (Host)" if self.network_mode == "lider" else "Auxiliar (Estação)")
+        self.segmented_rede.grid(row=0, column=0, sticky="ew", padx=15, pady=(15, 5))
         
         self.lbl_dir_titulo = ctk.CTkLabel(
             frame_direita, 
-            text="Criar Novo Dia do Servir", 
+            text="Criar Novo Dia do Servir" if self.network_mode == "lider" else "Sincronizar via Rede Local", 
             font=ctk.CTkFont(size=15, weight="bold"),
-            text_color="#2ecc71"
+            text_color="#2ecc71" if self.network_mode == "lider" else "#3498db"
         )
-        self.lbl_dir_titulo.grid(row=0, column=0, sticky="w", padx=15, pady=12)
+        self.lbl_dir_titulo.grid(row=1, column=0, sticky="w", padx=15, pady=(5, 5))
         
-        # Scrollable Frame para o formulário
-        scroll_form = ctk.CTkScrollableFrame(frame_direita, fg_color="transparent")
-        scroll_form.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
-        scroll_form.grid_columnconfigure(0, weight=1)
-        
-        # 1. Nome do Servir
-        lbl_nome_servir = ctk.CTkLabel(scroll_form, text="Nome do Servir:", font=ctk.CTkFont(weight="bold"))
-        lbl_nome_servir.pack(anchor="w", padx=10, pady=(15, 2))
-        self.entry_nome_servir = ctk.CTkEntry(scroll_form, placeholder_text="Ex: Culto de Domingo - 19/07")
-        self.entry_nome_servir.pack(fill="x", padx=10, pady=(0, 10))
-        
-        # 2. Voluntários (Fotógrafos)
-        lbl_voluntarios = ctk.CTkLabel(scroll_form, text="Voluntários (Fotógrafos):", font=ctk.CTkFont(weight="bold"))
-        lbl_voluntarios.pack(anchor="w", padx=10, pady=(5, 2))
-        
-        frame_add_vol = ctk.CTkFrame(scroll_form, fg_color="transparent")
-        frame_add_vol.pack(fill="x", padx=10, pady=(0, 5))
-        frame_add_vol.grid_columnconfigure(0, weight=1)
-        
-        self.entry_add_vol = ctk.CTkEntry(frame_add_vol, placeholder_text="Nome do voluntário...")
-        self.entry_add_vol.grid(row=0, column=0, sticky="ew", padx=(0, 5))
-        self.entry_add_vol.bind("<Return>", lambda e: self.adicionar_voluntario_lista())
-        
-        btn_add_vol = ctk.CTkButton(
-            frame_add_vol, 
-            text="+", 
-            width=30, 
-            font=ctk.CTkFont(weight="bold"), 
-            command=self.adicionar_voluntario_lista
-        )
-        btn_add_vol.grid(row=0, column=1, sticky="e")
-        
-        # Container para a lista de voluntários adicionados
-        self.lista_voluntarios_temp = []
-        self.frame_lista_vol = ctk.CTkScrollableFrame(scroll_form, height=65, fg_color="#111")
-        self.frame_lista_vol.pack(fill="x", padx=10, pady=(0, 10))
-        self.atualizar_lista_vol_ui()
-        
-        # 3. Pastas Predefinidas
-        lbl_pastas = ctk.CTkLabel(scroll_form, text="Pastas Predefinidas (Categorias):", font=ctk.CTkFont(weight="bold"))
-        lbl_pastas.pack(anchor="w", padx=10, pady=(5, 2))
-        
-        frame_add_pasta = ctk.CTkFrame(scroll_form, fg_color="transparent")
-        frame_add_pasta.pack(fill="x", padx=10, pady=(0, 5))
-        frame_add_pasta.grid_columnconfigure(0, weight=1)
-        
-        self.entry_add_pasta = ctk.CTkEntry(frame_add_pasta, placeholder_text="Ex: voltz, burn, bold...")
-        self.entry_add_pasta.grid(row=0, column=0, sticky="ew", padx=(0, 5))
-        self.entry_add_pasta.bind("<Return>", lambda e: self.adicionar_pasta_lista())
-        
-        btn_add_pasta = ctk.CTkButton(
-            frame_add_pasta, 
-            text="+", 
-            width=30, 
-            font=ctk.CTkFont(weight="bold"), 
-            command=self.adicionar_pasta_lista
-        )
-        btn_add_pasta.grid(row=0, column=1, sticky="e")
-        
-        # Container para a lista de pastas adicionadas
-        self.lista_pastas_temp = []
-        self.frame_lista_pastas = ctk.CTkScrollableFrame(scroll_form, height=65, fg_color="#111")
-        self.frame_lista_pastas.pack(fill="x", padx=10, pady=(0, 10))
-        self.atualizar_lista_pastas_ui()
-        
-        # 4. Google Drive
-        lbl_drive_titulo = ctk.CTkLabel(scroll_form, text="Google Drive (Opcional):", font=ctk.CTkFont(weight="bold", size=13), text_color="#3498db")
-        lbl_drive_titulo.pack(anchor="w", padx=10, pady=(10, 2))
-        
-        lbl_drive_link = ctk.CTkLabel(scroll_form, text="Link/ID da Pasta do Drive:")
-        lbl_drive_link.pack(anchor="w", padx=10)
-        
-        frame_drive_link = ctk.CTkFrame(scroll_form, fg_color="transparent")
-        frame_drive_link.pack(fill="x", padx=10, pady=(0, 5))
-        frame_drive_link.grid_columnconfigure(0, weight=1)
-        
-        self.entry_drive_link_servir = ctk.CTkEntry(frame_drive_link, placeholder_text="Cole o link ou ID da pasta do Drive...")
-        self.entry_drive_link_servir.grid(row=0, column=0, sticky="ew", padx=(0, 5))
-        
-        btn_buscar_nome = ctk.CTkButton(
-            frame_drive_link, 
-            text="Buscar Nome", 
-            width=90, 
-            command=self.buscar_nome_drive_thread
-        )
-        btn_buscar_nome.grid(row=0, column=1, sticky="e")
-        
-        lbl_drive_nome = ctk.CTkLabel(scroll_form, text="Nome de Exibição da Pasta:")
-        lbl_drive_nome.pack(anchor="w", padx=10)
-        self.entry_drive_nome_servir = ctk.CTkEntry(scroll_form, placeholder_text="Nome da Pasta (busca automática ou digite)")
-        self.entry_drive_nome_servir.pack(fill="x", padx=10, pady=(0, 15))
-        
-        # Botão Criar
-        self.btn_criar_servir = ctk.CTkButton(
-            scroll_form, 
-            text="🚀 Criar e Ativar Novo Servir", 
-            font=ctk.CTkFont(size=14, weight="bold"),
-            fg_color="#2ecc71", 
-            hover_color="#27ae60",
-            height=40,
-            command=self.criar_novo_servir
-        )
-        self.btn_criar_servir.pack(fill="x", padx=10, pady=(5, 10))
-        
+        if self.network_mode == "lider":
+            # Scrollable Frame para o formulário
+            scroll_form = ctk.CTkScrollableFrame(frame_direita, fg_color="transparent")
+            scroll_form.grid(row=2, column=0, sticky="nsew", padx=10, pady=(0, 10))
+            scroll_form.grid_columnconfigure(0, weight=1)
+            
+            # 1. Nome do Servir
+            lbl_nome_servir = ctk.CTkLabel(scroll_form, text="Nome do Servir:", font=ctk.CTkFont(weight="bold"))
+            lbl_nome_servir.pack(anchor="w", padx=10, pady=(15, 2))
+            self.entry_nome_servir = ctk.CTkEntry(scroll_form, placeholder_text="Ex: Culto de Domingo - 19/07")
+            self.entry_nome_servir.pack(fill="x", padx=10, pady=(0, 10))
+            
+            # 2. Voluntários (Fotógrafos)
+            lbl_voluntarios = ctk.CTkLabel(scroll_form, text="Voluntários (Fotógrafos):", font=ctk.CTkFont(weight="bold"))
+            lbl_voluntarios.pack(anchor="w", padx=10, pady=(5, 2))
+            
+            frame_add_vol = ctk.CTkFrame(scroll_form, fg_color="transparent")
+            frame_add_vol.pack(fill="x", padx=10, pady=(0, 5))
+            frame_add_vol.grid_columnconfigure(0, weight=1)
+            
+            self.entry_add_vol = ctk.CTkEntry(frame_add_vol, placeholder_text="Nome do voluntário...")
+            self.entry_add_vol.grid(row=0, column=0, sticky="ew", padx=(0, 5))
+            self.entry_add_vol.bind("<Return>", lambda e: self.adicionar_voluntario_lista())
+            
+            btn_add_vol = ctk.CTkButton(
+                frame_add_vol, 
+                text="+", 
+                width=30, 
+                font=ctk.CTkFont(weight="bold"), 
+                command=self.adicionar_voluntario_lista
+            )
+            btn_add_vol.grid(row=0, column=1, sticky="e")
+            
+            # Container para a lista de voluntários adicionados
+            self.lista_voluntarios_temp = []
+            self.frame_lista_vol = ctk.CTkScrollableFrame(scroll_form, height=65, fg_color="#111")
+            self.frame_lista_vol.pack(fill="x", padx=10, pady=(0, 10))
+            self.atualizar_lista_vol_ui()
+            
+            # 3. Pastas Predefinidas
+            lbl_pastas = ctk.CTkLabel(scroll_form, text="Pastas Predefinidas (Categorias):", font=ctk.CTkFont(weight="bold"))
+            lbl_pastas.pack(anchor="w", padx=10, pady=(5, 2))
+            
+            frame_add_pasta = ctk.CTkFrame(scroll_form, fg_color="transparent")
+            frame_add_pasta.pack(fill="x", padx=10, pady=(0, 5))
+            frame_add_pasta.grid_columnconfigure(0, weight=1)
+            
+            self.entry_add_pasta = ctk.CTkEntry(frame_add_pasta, placeholder_text="Ex: voltz, burn, bold...")
+            self.entry_add_pasta.grid(row=0, column=0, sticky="ew", padx=(0, 5))
+            self.entry_add_pasta.bind("<Return>", lambda e: self.adicionar_pasta_lista())
+            
+            btn_add_pasta = ctk.CTkButton(
+                frame_add_pasta, 
+                text="+", 
+                width=30, 
+                font=ctk.CTkFont(weight="bold"), 
+                command=self.adicionar_pasta_lista
+            )
+            btn_add_pasta.grid(row=0, column=1, sticky="e")
+            
+            # Container para a lista de pastas adicionadas
+            self.lista_pastas_temp = []
+            self.frame_lista_pastas = ctk.CTkScrollableFrame(scroll_form, height=65, fg_color="#111")
+            self.frame_lista_pastas.pack(fill="x", padx=10, pady=(0, 10))
+            self.atualizar_lista_pastas_ui()
+            
+            # 4. Google Drive
+            lbl_drive_titulo = ctk.CTkLabel(scroll_form, text="Google Drive (Opcional):", font=ctk.CTkFont(weight="bold", size=13), text_color="#3498db")
+            lbl_drive_titulo.pack(anchor="w", padx=10, pady=(10, 2))
+            
+            lbl_drive_link = ctk.CTkLabel(scroll_form, text="Link/ID da Pasta do Drive:")
+            lbl_drive_link.pack(anchor="w", padx=10)
+            
+            frame_drive_link = ctk.CTkFrame(scroll_form, fg_color="transparent")
+            frame_drive_link.pack(fill="x", padx=10, pady=(0, 5))
+            frame_drive_link.grid_columnconfigure(0, weight=1)
+            
+            self.entry_drive_link_servir = ctk.CTkEntry(frame_drive_link, placeholder_text="Cole o link ou ID da pasta do Drive...")
+            self.entry_drive_link_servir.grid(row=0, column=0, sticky="ew", padx=(0, 5))
+            
+            btn_buscar_nome = ctk.CTkButton(
+                frame_drive_link, 
+                text="Buscar Nome", 
+                width=90, 
+                command=self.buscar_nome_drive_thread
+            )
+            btn_buscar_nome.grid(row=0, column=1, sticky="e")
+            
+            lbl_drive_nome = ctk.CTkLabel(scroll_form, text="Nome de Exibição da Pasta:")
+            lbl_drive_nome.pack(anchor="w", padx=10)
+            self.entry_drive_nome_servir = ctk.CTkEntry(scroll_form, placeholder_text="Nome da Pasta (busca automática ou digite)")
+            self.entry_drive_nome_servir.pack(fill="x", padx=10, pady=(0, 15))
+            
+            # Botão Criar
+            self.btn_criar_servir = ctk.CTkButton(
+                scroll_form, 
+                text="🚀 Criar e Ativar Novo Servir", 
+                font=ctk.CTkFont(size=14, weight="bold"),
+                fg_color="#2ecc71", 
+                hover_color="#27ae60",
+                height=40,
+                command=self.criar_novo_servir
+            )
+            self.btn_criar_servir.pack(fill="x", padx=10, pady=(5, 10))
+        else:
+            self.frame_sync_auxiliar = ctk.CTkFrame(frame_direita, fg_color="transparent")
+            self.frame_sync_auxiliar.grid(row=2, column=0, sticky="nsew", padx=10, pady=(0, 10))
+            
+            lbl_info = ctk.CTkLabel(
+                self.frame_sync_auxiliar, 
+                text="Esta estação receberá o preset (voluntários e categorias)\ndo computador Líder automaticamente.",
+                font=ctk.CTkFont(size=12),
+                justify="center"
+            )
+            lbl_info.pack(pady=(20, 15))
+            
+            self.frame_status_busca = ctk.CTkFrame(self.frame_sync_auxiliar, fg_color="#141414", corner_radius=8, border_width=1, border_color="#2b2b2b")
+            self.frame_status_busca.pack(fill="x", padx=15, pady=10)
+            
+            self.lbl_status_busca = ctk.CTkLabel(
+                self.frame_status_busca, 
+                text="🔍 Procurando Líder na rede local...",
+                font=ctk.CTkFont(size=13, weight="bold"),
+                text_color="orange"
+            )
+            self.lbl_status_busca.pack(pady=15)
+            
+            self.frame_dados_lider = ctk.CTkFrame(self.frame_sync_auxiliar, fg_color="transparent")
+            
+            self.lbl_lider_nome = ctk.CTkLabel(self.frame_dados_lider, text="Evento: --", font=ctk.CTkFont(size=14, weight="bold"))
+            self.lbl_lider_nome.pack(pady=2)
+            
+            self.lbl_lider_ip = ctk.CTkLabel(self.frame_dados_lider, text="Líder IP: --", font=ctk.CTkFont(size=12), text_color="gray")
+            self.lbl_lider_ip.pack(pady=2)
+            
+            self.btn_sincronizar = ctk.CTkButton(
+                self.frame_sync_auxiliar,
+                text="🔗 Sincronizar e Iniciar Importação",
+                font=ctk.CTkFont(size=13, weight="bold"),
+                fg_color="#2ecc71",
+                hover_color="#27ae60",
+                height=38,
+                command=self.conectar_e_sincronizar_lider
+            )
+            self.btn_sincronizar.configure(state="disabled")
+            self.btn_sincronizar.pack(fill="x", padx=15, pady=15)
+            
+            self.btn_reiniciar_busca = ctk.CTkButton(
+                self.frame_sync_auxiliar,
+                text="🔄 Reiniciar Busca",
+                font=ctk.CTkFont(size=11, weight="bold"),
+                height=28,
+                fg_color="#34495e",
+                hover_color="#2c3e50",
+                command=self.reiniciar_rede_botao
+            )
+            self.btn_reiniciar_busca.pack(fill="x", padx=15, pady=(0, 10))
+            
+            self.atualizar_lider_detectado_ui()
+            
         # Carrega e exibe a lista de dias passados
         self.dias_servir = self.carregar_dias_servir()
         self.atualizar_lista_dias_ui()
@@ -2016,6 +2493,16 @@ class ImportadorFotosApp(ctk.CTk):
             )
             lbl_servir_nome.pack(side="left", padx=5)
             
+            # Indicador de rede local
+            if self.network_mode == "auxiliar":
+                lbl_rede = ctk.CTkLabel(
+                    self.frame_status_servir, 
+                    text="📡 Auxiliar", 
+                    font=ctk.CTkFont(size=11, weight="bold"),
+                    text_color="#3498db"
+                )
+                lbl_rede.pack(side="left", padx=5)
+            
             self.btn_abrir_raiz = ctk.CTkButton(
                 self.frame_status_servir,
                 text="📂 Abrir Pasta do Servir",
@@ -2027,16 +2514,27 @@ class ImportadorFotosApp(ctk.CTk):
             )
             self.btn_abrir_raiz.pack(side="left", padx=5)
 
-            self.btn_finalizar_servir = ctk.CTkButton(
-                self.frame_status_servir,
-                text="🏁 Finalizar Servir",
-                font=ctk.CTkFont(size=11, weight="bold"),
-                height=26,
-                fg_color="#d35400",
-                hover_color="#e67e22",
-                command=self.finalizar_servir_thread
-            )
-            self.btn_finalizar_servir.pack(side="left", padx=5)
+            if self.network_mode == "lider":
+                self.btn_finalizar_servir = ctk.CTkButton(
+                    self.frame_status_servir,
+                    text="🏁 Finalizar Servir",
+                    font=ctk.CTkFont(size=11, weight="bold"),
+                    height=26,
+                    fg_color="#d35400",
+                    hover_color="#e67e22",
+                    command=self.finalizar_servir_thread
+                )
+                self.btn_finalizar_servir.pack(side="left", padx=5)
+            else:
+                self.btn_finalizar_servir = ctk.CTkButton(
+                    self.frame_status_servir,
+                    text="🔒 Finalizar (Líder)",
+                    font=ctk.CTkFont(size=11, weight="bold"),
+                    height=26,
+                    fg_color="#555555",
+                    state="disabled"
+                )
+                self.btn_finalizar_servir.pack(side="left", padx=5)
         else:
             lbl_servir_nome = ctk.CTkLabel(
                 self.frame_status_servir, 
@@ -2964,53 +3462,66 @@ class ImportadorFotosApp(ctk.CTk):
                 "categorias": []
             }
             
-            # 2. Mapeia a estrutura real de arquivos no disco
-            pasta_raiz_servir = os.path.join(destino_base, nome_servir)
+            # 2. Obter estatísticas locais
+            local_stats = self.obter_estatisticas_locais()
             
-            if os.path.exists(pasta_raiz_servir):
-                # Percorre as categorias que estão cadastradas ou que existem no disco
-                categorias_detectadas = {}
-                
-                # Lista todas as subpastas da raiz (as categorias)
-                for item in os.listdir(pasta_raiz_servir):
-                    caminho_item = os.path.join(pasta_raiz_servir, item)
-                    if os.path.isdir(caminho_item):
-                        categoria_nome = item
-                        categorias_detectadas[categoria_nome] = []
+            # 3. Obter estatísticas das estações auxiliares conectadas
+            aux_stats_list = []
+            estacoes_com_erro = []
+            
+            if self.network_mode == "lider" and self.auxiliar_stations:
+                for ip, info in list(self.auxiliar_stations.items()):
+                    try:
+                        url = f"http://{ip}:{info['port']}/stats"
+                        res = requests.get(url, timeout=3.0)
+                        if res.status_code == 200:
+                            dados = res.json()
+                            aux_stats_list.append(dados.get("categorias", []))
+                        else:
+                            estacoes_com_erro.append(info['nome'])
+                    except Exception:
+                        estacoes_com_erro.append(info['nome'])
                         
-                        # Dentro da categoria, lista as pastas de fotógrafos
-                        for subitem in os.listdir(caminho_item):
-                            caminho_subitem = os.path.join(caminho_item, subitem)
-                            if os.path.isdir(caminho_subitem):
-                                fotografo_dir_nome = subitem
-                                
-                                # Conta os arquivos/fotos do fotógrafo
-                                total_fotos = 0
-                                for root, _, files in os.walk(caminho_subitem):
-                                    for file_name in files:
-                                        if file_name.lower().endswith(('.png', '.jpg', '.jpeg', '.cr2', '.nef', '.arw', '.cr3', '.mp4')):
-                                            total_fotos += 1
-                                
-                                categorias_detectadas[categoria_nome].append({
-                                    "nome_fotografo": fotografo_dir_nome,
-                                    "total_fotos": total_fotos
-                                })
-                
-                # Formata as categorias para a lista no payload
-                for cat_nome, fotogs in categorias_detectadas.items():
-                    payload["categorias"].append({
-                        "nome": cat_nome,
-                        "fotografos": fotogs
-                    })
+            # Se houver erro de conexão com algum auxiliar, pergunta se deseja prosseguir
+            if estacoes_com_erro:
+                confirmar_aviso = []
+                evt = threading.Event()
+                def exibir_confirmacao():
+                    res = messagebox.askyesno(
+                        "Erro de Comunicação LAN",
+                        f"Não foi possível obter dados das seguintes estações:\n"
+                        f"{', '.join(estacoes_com_erro)}\n\n"
+                        "Deseja finalizar o Servir mesmo assim (ignorando estas estações)?"
+                    )
+                    confirmar_aviso.append(res)
+                    evt.set()
+                self.after(0, exibir_confirmacao)
+                evt.wait()
+                if not confirmar_aviso or not confirmar_aviso[0]:
+                    # Cancela a finalização
+                    self.after(0, lambda: self.btn_finalizar_servir.configure(state="normal", text="🏁 Finalizar Servir"))
+                    return
             
-            # 3. Envia o payload via POST para o webhook
+            # Mesclar as estatísticas
+            categorias_final = mesclar_estatisticas(local_stats, aux_stats_list)
+            payload["categorias"] = categorias_final
+            
+            # 4. Envia o payload via POST para o webhook
             url_webhook = "https://sistema-crescer-n8n.vuvd0x.easypanel.host/webhook/finalizar-servir"
             headers = {"Content-Type": "application/json"}
             
             resposta = requests.post(url_webhook, json=payload, headers=headers, timeout=30)
             
-            # 4. Trata a resposta
+            # 5. Trata a resposta
             if resposta.status_code in [200, 201]:
+                # Notifica todas as estações auxiliares para finalizarem remotamente
+                if self.network_mode == "lider" and self.auxiliar_stations:
+                    for ip, info in list(self.auxiliar_stations.items()):
+                        try:
+                            url = f"http://{ip}:{info['port']}/finalize"
+                            requests.post(url, timeout=2.0)
+                        except Exception:
+                            pass
                 self.after(0, lambda: self.finalizar_servir_sucesso())
             else:
                 self.after(0, lambda r=resposta: self.finalizar_servir_erro(f"Código de status: {r.status_code}"))
@@ -3022,6 +3533,8 @@ class ImportadorFotosApp(ctk.CTk):
         if hasattr(self, 'btn_finalizar_servir') and self.btn_finalizar_servir.winfo_exists():
             self.btn_finalizar_servir.configure(state="normal", text="🏁 Finalizar Servir")
         messagebox.showinfo("Sucesso", "Servir finalizado com sucesso! Todos os dados foram enviados para o webhook.")
+        self.active_servir = None
+        self.mostrar_pagina_inicial()
         
     def finalizar_servir_erro(self, erro_msg):
         if hasattr(self, 'btn_finalizar_servir') and self.btn_finalizar_servir.winfo_exists():
