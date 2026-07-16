@@ -2432,6 +2432,36 @@ class ImportadorFotosApp(ctk.CTk):
 
     def ativar_servir_dia(self, servir):
         self.active_servir = servir
+        if servir:
+            nome_servir = servir.get('nome')
+            bases_criar = []
+            
+            destino_base = self.destino_path.get()
+            if destino_base:
+                bases_criar.append(destino_base)
+                
+            if hasattr(self, 'destino_padrao_app') and self.destino_padrao_app:
+                if self.destino_padrao_app not in bases_criar:
+                    bases_criar.append(self.destino_padrao_app)
+                    
+            if hasattr(self, 'pastas_local') and self.pastas_local:
+                for p in self.pastas_local:
+                    caminho = p.get('caminho')
+                    if caminho and caminho not in bases_criar:
+                        bases_criar.append(caminho)
+                        
+            for base in bases_criar:
+                if not base:
+                    continue
+                base_servir = os.path.join(base, nome_servir)
+                try:
+                    os.makedirs(base_servir, exist_ok=True)
+                    pastas_cats = servir.get("pastas_predefinidas", [])
+                    for cat in pastas_cats:
+                        os.makedirs(os.path.join(base_servir, cat), exist_ok=True)
+                except Exception as e:
+                    print(f"Erro ao criar estrutura de pastas em {base}: {e}")
+                    
         self.mostrar_tela_descarregamento()
 
     # --- TELA DE DESCARREGAMENTO ---
