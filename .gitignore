@@ -18,5 +18,10 @@ token.json
 
 config_pastas.json
 historico_downloads.json
+.env
+dias_servir.json
+credentialsHOUSE.json
+client_secret_*.json
+Fotos_Sistema/
 
 /Teste

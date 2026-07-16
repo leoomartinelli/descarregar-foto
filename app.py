@@ -1067,14 +1067,111 @@ class ConfiguradorDriveWindow(ctk.CTkToplevel):
             messagebox.showwarning("Pasta Não Encontrada", f"A pasta '{pasta}' não existe ou foi movida/deletada.")
 
 
+def sincronizar_credenciais_env():
+    # Caminho do .env e credentials.json
+    dir_atual = os.path.dirname(os.path.abspath(__file__))
+    caminho_env = os.path.join(dir_atual, ".env")
+    caminho_credenciais = os.path.join(dir_atual, "credentials.json")
+    token_path = os.path.join(dir_atual, "token.json")
+    
+    if not os.path.exists(caminho_env):
+        return
+        
+    client_id = None
+    client_secret = None
+    
+    try:
+        with open(caminho_env, 'r', encoding='utf-8') as f:
+            linhas = f.read().splitlines()
+            
+        # 1. Tenta encontrar por padrões conhecidos do Google OAuth
+        for linha in linhas:
+            linha_limpa = linha.strip()
+            if not linha_limpa:
+                continue
+            if ".apps.googleusercontent.com" in linha_limpa:
+                if "=" in linha_limpa:
+                    client_id = linha_limpa.split("=", 1)[1].strip().strip('"\'')
+                else:
+                    client_id = linha_limpa
+            elif "GOCSPX-" in linha_limpa:
+                if "=" in linha_limpa:
+                    client_secret = linha_limpa.split("=", 1)[1].strip().strip('"\'')
+                else:
+                    client_secret = linha_limpa
+                    
+        # 2. Fallback por ordem de linhas não vazias se não detectou por padrão
+        linhas_validas = [l.strip() for l in linhas if l.strip()]
+        if not client_id and len(linhas_validas) >= 1:
+            client_id = linhas_validas[0]
+        if not client_secret and len(linhas_validas) >= 2:
+            if len(linhas_validas) == 2:
+                client_secret = linhas_validas[1]
+            elif len(linhas_validas) > 2:
+                client_secret = linhas_validas[2]
+                
+        # Limpa aspas ou espaços remanescentes
+        if client_id:
+            client_id = client_id.strip().strip('"\'')
+        if client_secret:
+            client_secret = client_secret.strip().strip('"\'')
+            
+        if not client_id or not client_secret:
+            print("Não foi possível identificar Client ID e Client Secret no arquivo .env")
+            return
+            
+        # Carrega credentials.json existente se houver para comparar
+        dados_cred = {}
+        if os.path.exists(caminho_credenciais):
+            try:
+                with open(caminho_credenciais, 'r', encoding='utf-8') as f:
+                    dados_cred = json.load(f)
+            except Exception:
+                pass
+                
+        installed_data = dados_cred.get("installed", {})
+        id_atual = installed_data.get("client_id")
+        secret_atual = installed_data.get("client_secret")
+        
+        # Se os dados mudaram ou o arquivo não existia, cria/sobrescreve
+        if id_atual != client_id or secret_atual != client_secret:
+            novos_dados = {
+                "installed": {
+                    "client_id": client_id,
+                    "project_id": installed_data.get("project_id", "descarregar-foto"),
+                    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                    "token_uri": "https://oauth2.googleapis.com/token",
+                    "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+                    "client_secret": client_secret,
+                    "redirect_uris": ["http://localhost"]
+                }
+            }
+            
+            with open(caminho_credenciais, 'w', encoding='utf-8') as f:
+                json.dump(novos_dados, f, indent=4)
+            print("Arquivo credentials.json gerado/atualizado com sucesso a partir do .env!")
+            
+            # Se mudou a credencial, removemos o token.json para forçar login correto
+            if os.path.exists(token_path):
+                try:
+                    os.remove(token_path)
+                    print("token.json antigo removido para evitar conflito com as novas credenciais.")
+                except Exception as e:
+                    print(f"Erro ao remover token.json antigo: {e}")
+                    
+    except Exception as e:
+        print(f"Erro ao sincronizar credenciais do .env: {e}")
+
+
 class ImportadorFotosApp(ctk.CTk):
     def __init__(self):
+        sincronizar_credenciais_env()
         super().__init__()
 
         self.title("Descarregador de Fotos - Ministério")
-        self.geometry("700x820")
+        self.geometry("1020x800")
         self.resizable(True, True)
-        self.minsize(700, 820)
+        self.minsize(1000, 800)
 
         self.destino_path = ctk.StringVar()
         self.cartao_detectado = False
@@ -1082,13 +1179,20 @@ class ImportadorFotosApp(ctk.CTk):
         self.drive_path = ""
         self.checkboxes_pastas = []
         self.arquivos_transferidos = [] # Guarda o caminho de todas as fotos transferidas com sucesso
+        self.active_servir = None       # Dia de servir ativo atualmente
+        self.servir_em_edicao = None    # Dia de servir sendo editado atualmente
         
+        # Pasta padrão dentro do diretório do app
+        self.destino_padrao_app = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Fotos_Sistema")
+        os.makedirs(self.destino_padrao_app, exist_ok=True)
+
         # Carrega configuração de pastas do Drive e locais para o líder
         self.caminho_config_pastas = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config_pastas.json")
+        self.caminho_dias_servir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dias_servir.json")
         self.pastas_drive = self.carregar_config_pastas()
         self.pastas_local = self.carregar_config_pastas_local()
         
-        self.setup_ui()
+        self.mostrar_pagina_inicial()
         
         self.monitor_thread = threading.Thread(target=self.monitorar_cartao, daemon=True)
         self.monitor_thread.start()
@@ -1119,11 +1223,1139 @@ class ImportadorFotosApp(ctk.CTk):
                 print(f"Erro ao carregar pastas locais: {e}")
         return []
 
+    def carregar_dias_servir(self):
+        if os.path.exists(self.caminho_dias_servir):
+            try:
+                with open(self.caminho_dias_servir, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except Exception as e:
+                print(f"Erro ao carregar dias de servir: {e}")
+        return []
+
+    def salvar_dias_servir(self, dias):
+        try:
+            with open(self.caminho_dias_servir, 'w', encoding='utf-8') as f:
+                json.dump(dias, f, indent=4, ensure_ascii=False)
+            return True
+        except Exception as e:
+            print(f"Erro ao salvar dias de servir: {e}")
+            return False
+
+    def obter_ou_criar_pasta_drive(self, service, nome_pasta, pai_id):
+        query = f"name = '{nome_pasta}' and '{pai_id}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
+        try:
+            resultado = service.files().list(q=query, fields='files(id)').execute()
+            arquivos = resultado.get('files', [])
+            if arquivos:
+                return arquivos[0]['id']
+        except Exception as e:
+            print(f"Erro ao buscar pasta {nome_pasta}: {e}")
+            
+        metadata = {
+            'name': nome_pasta,
+            'mimeType': 'application/vnd.google-apps.folder',
+            'parents': [pai_id]
+        }
+        try:
+            pasta = service.files().create(body=metadata, fields='id').execute()
+            return pasta.get('id')
+        except Exception as e:
+            print(f"Erro ao criar pasta {nome_pasta}: {e}")
+            return None
+
     def abrir_configurador_drive(self):
         self.janela_config = ConfiguradorDriveWindow(self)
 
     def abrir_historico_dados(self):
         self.janela_dados = HistoricoDadosWindow(self)
+
+    # --- PÁGINA INICIAL ---
+    def mostrar_pagina_inicial(self):
+        self.active_servir = None
+        
+        # Limpa widgets anteriores de forma limpa
+        for widget in self.winfo_children():
+            if widget != self.monitor_thread:
+                try:
+                    widget.pack_forget()
+                    widget.grid_forget()
+                    widget.destroy()
+                except Exception:
+                    pass
+                    
+        # Redimensiona a janela para a página inicial
+        self.geometry("1020x800")
+        self.minsize(1000, 800)
+        
+        # Cria container principal
+        self.container_principal = ctk.CTkFrame(self, fg_color="transparent")
+        self.container_principal.pack(fill="both", expand=True, padx=20, pady=20)
+        
+        self.container_principal.grid_rowconfigure(0, weight=0) # Header
+        self.container_principal.grid_rowconfigure(1, weight=1) # Conteúdo principal
+        self.container_principal.grid_columnconfigure(0, weight=1)
+        
+        # --- HEADER ---
+        frame_header = ctk.CTkFrame(self.container_principal, fg_color="transparent")
+        frame_header.grid(row=0, column=0, sticky="ew", pady=(0, 15))
+        frame_header.grid_columnconfigure(0, weight=1)
+        
+        lbl_titulo = ctk.CTkLabel(
+            frame_header, 
+            text="📸 Descarregador de Fotos - Painel Inicial", 
+            font=ctk.CTkFont(size=22, weight="bold")
+        )
+        lbl_titulo.grid(row=0, column=0, sticky="w")
+        
+        # Botões do cabeçalho
+        frame_botoes = ctk.CTkFrame(frame_header, fg_color="transparent")
+        frame_botoes.grid(row=0, column=1, sticky="e")
+        
+        btn_dados = ctk.CTkButton(
+            frame_botoes, 
+            text="📊 Histórico", 
+            fg_color="#34495e", 
+            hover_color="#2c3e50",
+            command=self.abrir_historico_dados,
+            width=100,
+            height=30
+        )
+        btn_dados.pack(side="left", padx=5)
+        
+        btn_config = ctk.CTkButton(
+            frame_botoes, 
+            text="⚙️ Config Drive", 
+            fg_color="#34495e", 
+            hover_color="#2c3e50",
+            command=self.abrir_configurador_drive,
+            width=110,
+            height=30
+        )
+        btn_config.pack(side="left", padx=5)
+        
+        # --- AREA CENTRAL (Split em 2 colunas) ---
+        frame_corpo = ctk.CTkFrame(self.container_principal, fg_color="transparent")
+        frame_corpo.grid(row=1, column=0, sticky="nsew")
+        frame_corpo.grid_columnconfigure(0, weight=4, uniform="col") # Esquerda (Dias passados)
+        frame_corpo.grid_columnconfigure(1, weight=5, uniform="col") # Direita (Criar novo)
+        frame_corpo.grid_rowconfigure(0, weight=1)
+        
+        # --- COLUNA ESQUERDA: DIAS DO SERVIR SALVOS ---
+        frame_esquerda = ctk.CTkFrame(frame_corpo, fg_color="#1e1e1e", corner_radius=12, border_width=1, border_color="#2b2b2b")
+        frame_esquerda.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        frame_esquerda.grid_rowconfigure(1, weight=1)
+        frame_esquerda.grid_columnconfigure(0, weight=1)
+        
+        lbl_esq_titulo = ctk.CTkLabel(
+            frame_esquerda, 
+            text="Dias de Servir Anteriores", 
+            font=ctk.CTkFont(size=15, weight="bold"),
+            text_color="#3498db"
+        )
+        lbl_esq_titulo.grid(row=0, column=0, sticky="w", padx=15, pady=12)
+        
+        self.scroll_dias = ctk.CTkScrollableFrame(frame_esquerda, fg_color="transparent")
+        self.scroll_dias.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 5))
+        
+        # Botão Modo Avulso no rodapé da coluna esquerda
+        btn_avulso = ctk.CTkButton(
+            frame_esquerda,
+            text="📂 Modo Avulso (Sem Dia de Servir)",
+            fg_color="#7f8c8d",
+            hover_color="#95a5a6",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            height=32,
+            command=lambda: self.ativar_servir_dia(None)
+        )
+        btn_avulso.grid(row=2, column=0, sticky="ew", padx=15, pady=12)
+        
+        # --- COLUNA DIREITA: CRIAR NOVO DIA DO SERVIR ---
+        frame_direita = ctk.CTkFrame(frame_corpo, fg_color="#1a1a1a", corner_radius=12, border_width=1, border_color="#2b2b2b")
+        frame_direita.grid(row=0, column=1, sticky="nsew", padx=(10, 0))
+        frame_direita.grid_columnconfigure(0, weight=1)
+        frame_direita.grid_rowconfigure(1, weight=1)
+        
+        self.lbl_dir_titulo = ctk.CTkLabel(
+            frame_direita, 
+            text="Criar Novo Dia do Servir", 
+            font=ctk.CTkFont(size=15, weight="bold"),
+            text_color="#2ecc71"
+        )
+        self.lbl_dir_titulo.grid(row=0, column=0, sticky="w", padx=15, pady=12)
+        
+        # Scrollable Frame para o formulário
+        scroll_form = ctk.CTkScrollableFrame(frame_direita, fg_color="transparent")
+        scroll_form.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
+        scroll_form.grid_columnconfigure(0, weight=1)
+        
+        # 1. Nome do Servir
+        lbl_nome_servir = ctk.CTkLabel(scroll_form, text="Nome do Servir:", font=ctk.CTkFont(weight="bold"))
+        lbl_nome_servir.pack(anchor="w", padx=10, pady=(15, 2))
+        self.entry_nome_servir = ctk.CTkEntry(scroll_form, placeholder_text="Ex: Culto de Domingo - 19/07")
+        self.entry_nome_servir.pack(fill="x", padx=10, pady=(0, 10))
+        
+        # 2. Voluntários (Fotógrafos)
+        lbl_voluntarios = ctk.CTkLabel(scroll_form, text="Voluntários (Fotógrafos):", font=ctk.CTkFont(weight="bold"))
+        lbl_voluntarios.pack(anchor="w", padx=10, pady=(5, 2))
+        
+        frame_add_vol = ctk.CTkFrame(scroll_form, fg_color="transparent")
+        frame_add_vol.pack(fill="x", padx=10, pady=(0, 5))
+        frame_add_vol.grid_columnconfigure(0, weight=1)
+        
+        self.entry_add_vol = ctk.CTkEntry(frame_add_vol, placeholder_text="Nome do voluntário...")
+        self.entry_add_vol.grid(row=0, column=0, sticky="ew", padx=(0, 5))
+        self.entry_add_vol.bind("<Return>", lambda e: self.adicionar_voluntario_lista())
+        
+        btn_add_vol = ctk.CTkButton(
+            frame_add_vol, 
+            text="+", 
+            width=30, 
+            font=ctk.CTkFont(weight="bold"), 
+            command=self.adicionar_voluntario_lista
+        )
+        btn_add_vol.grid(row=0, column=1, sticky="e")
+        
+        # Container para a lista de voluntários adicionados
+        self.lista_voluntarios_temp = []
+        self.frame_lista_vol = ctk.CTkScrollableFrame(scroll_form, height=65, fg_color="#111")
+        self.frame_lista_vol.pack(fill="x", padx=10, pady=(0, 10))
+        self.atualizar_lista_vol_ui()
+        
+        # 3. Pastas Predefinidas
+        lbl_pastas = ctk.CTkLabel(scroll_form, text="Pastas Predefinidas (Categorias):", font=ctk.CTkFont(weight="bold"))
+        lbl_pastas.pack(anchor="w", padx=10, pady=(5, 2))
+        
+        frame_add_pasta = ctk.CTkFrame(scroll_form, fg_color="transparent")
+        frame_add_pasta.pack(fill="x", padx=10, pady=(0, 5))
+        frame_add_pasta.grid_columnconfigure(0, weight=1)
+        
+        self.entry_add_pasta = ctk.CTkEntry(frame_add_pasta, placeholder_text="Ex: voltz, burn, bold...")
+        self.entry_add_pasta.grid(row=0, column=0, sticky="ew", padx=(0, 5))
+        self.entry_add_pasta.bind("<Return>", lambda e: self.adicionar_pasta_lista())
+        
+        btn_add_pasta = ctk.CTkButton(
+            frame_add_pasta, 
+            text="+", 
+            width=30, 
+            font=ctk.CTkFont(weight="bold"), 
+            command=self.adicionar_pasta_lista
+        )
+        btn_add_pasta.grid(row=0, column=1, sticky="e")
+        
+        # Container para a lista de pastas adicionadas
+        self.lista_pastas_temp = []
+        self.frame_lista_pastas = ctk.CTkScrollableFrame(scroll_form, height=65, fg_color="#111")
+        self.frame_lista_pastas.pack(fill="x", padx=10, pady=(0, 10))
+        self.atualizar_lista_pastas_ui()
+        
+        # 4. Google Drive
+        lbl_drive_titulo = ctk.CTkLabel(scroll_form, text="Google Drive (Opcional):", font=ctk.CTkFont(weight="bold", size=13), text_color="#3498db")
+        lbl_drive_titulo.pack(anchor="w", padx=10, pady=(10, 2))
+        
+        lbl_drive_link = ctk.CTkLabel(scroll_form, text="Link/ID da Pasta do Drive:")
+        lbl_drive_link.pack(anchor="w", padx=10)
+        
+        frame_drive_link = ctk.CTkFrame(scroll_form, fg_color="transparent")
+        frame_drive_link.pack(fill="x", padx=10, pady=(0, 5))
+        frame_drive_link.grid_columnconfigure(0, weight=1)
+        
+        self.entry_drive_link_servir = ctk.CTkEntry(frame_drive_link, placeholder_text="Cole o link ou ID da pasta do Drive...")
+        self.entry_drive_link_servir.grid(row=0, column=0, sticky="ew", padx=(0, 5))
+        
+        btn_buscar_nome = ctk.CTkButton(
+            frame_drive_link, 
+            text="Buscar Nome", 
+            width=90, 
+            command=self.buscar_nome_drive_thread
+        )
+        btn_buscar_nome.grid(row=0, column=1, sticky="e")
+        
+        lbl_drive_nome = ctk.CTkLabel(scroll_form, text="Nome de Exibição da Pasta:")
+        lbl_drive_nome.pack(anchor="w", padx=10)
+        self.entry_drive_nome_servir = ctk.CTkEntry(scroll_form, placeholder_text="Nome da Pasta (busca automática ou digite)")
+        self.entry_drive_nome_servir.pack(fill="x", padx=10, pady=(0, 15))
+        
+        # Botão Criar
+        self.btn_criar_servir = ctk.CTkButton(
+            scroll_form, 
+            text="🚀 Criar e Ativar Novo Servir", 
+            font=ctk.CTkFont(size=14, weight="bold"),
+            fg_color="#2ecc71", 
+            hover_color="#27ae60",
+            height=40,
+            command=self.criar_novo_servir
+        )
+        self.btn_criar_servir.pack(fill="x", padx=10, pady=(5, 10))
+        
+        # Carrega e exibe a lista de dias passados
+        self.dias_servir = self.carregar_dias_servir()
+        self.atualizar_lista_dias_ui()
+
+    def adicionar_voluntario_lista(self, event=None):
+        nome = self.entry_add_vol.get().strip()
+        if nome:
+            if nome not in self.lista_voluntarios_temp:
+                self.lista_voluntarios_temp.append(nome)
+                self.entry_add_vol.delete(0, 'end')
+                self.atualizar_lista_vol_ui()
+            else:
+                messagebox.showwarning("Aviso", f"O voluntário '{nome}' já foi adicionado!")
+
+    def remover_voluntario_lista(self, nome):
+        if nome in self.lista_voluntarios_temp:
+            self.lista_voluntarios_temp.remove(nome)
+            self.atualizar_lista_vol_ui()
+
+    def atualizar_lista_vol_ui(self):
+        for widget in self.frame_lista_vol.winfo_children():
+            widget.destroy()
+            
+        if not self.lista_voluntarios_temp:
+            lbl_vazio = ctk.CTkLabel(self.frame_lista_vol, text="Nenhum voluntário adicionado.", text_color="gray", font=ctk.CTkFont(size=12))
+            lbl_vazio.pack(pady=10)
+            return
+            
+        for vol in self.lista_voluntarios_temp:
+            frame_item = ctk.CTkFrame(self.frame_lista_vol, fg_color="#222")
+            frame_item.pack(fill="x", pady=2, padx=5)
+            
+            lbl_nome = ctk.CTkLabel(frame_item, text=vol, anchor="w")
+            lbl_nome.pack(side="left", padx=10, fill="x", expand=True)
+            
+            btn_del = ctk.CTkButton(
+                frame_item, 
+                text="❌", 
+                width=24, 
+                height=20, 
+                fg_color="transparent", 
+                hover_color="#e74c3c", 
+                command=lambda v=vol: self.remover_voluntario_lista(v)
+            )
+            btn_del.pack(side="right", padx=5)
+
+    def adicionar_pasta_lista(self, event=None):
+        pasta = self.entry_add_pasta.get().strip()
+        if pasta:
+            # Substitui barras por nada para garantir segurança de nome de pasta
+            for char in ['/', '\\\\', ':', '*', '?', '"', '<', '>', '|']:
+                pasta = pasta.replace(char, '')
+            if pasta:
+                if pasta not in self.lista_pastas_temp:
+                    self.lista_pastas_temp.append(pasta)
+                    self.entry_add_pasta.delete(0, 'end')
+                    self.atualizar_lista_pastas_ui()
+                else:
+                    messagebox.showwarning("Aviso", f"A pasta '{pasta}' já foi adicionada!")
+
+    def remover_pasta_lista(self, pasta):
+        if pasta in self.lista_pastas_temp:
+            self.lista_pastas_temp.remove(pasta)
+            self.atualizar_lista_pastas_ui()
+
+    def atualizar_lista_pastas_ui(self):
+        for widget in self.frame_lista_pastas.winfo_children():
+            widget.destroy()
+            
+        if not self.lista_pastas_temp:
+            lbl_vazio = ctk.CTkLabel(self.frame_lista_pastas, text="Nenhuma pasta adicionada.", text_color="gray", font=ctk.CTkFont(size=12))
+            lbl_vazio.pack(pady=10)
+            return
+            
+        for pasta in self.lista_pastas_temp:
+            frame_item = ctk.CTkFrame(self.frame_lista_pastas, fg_color="#222")
+            frame_item.pack(fill="x", pady=2, padx=5)
+            
+            lbl_nome = ctk.CTkLabel(frame_item, text=pasta, anchor="w")
+            lbl_nome.pack(side="left", padx=10, fill="x", expand=True)
+            
+            btn_del = ctk.CTkButton(
+                frame_item, 
+                text="❌", 
+                width=24, 
+                height=20, 
+                fg_color="transparent", 
+                hover_color="#e74c3c", 
+                command=lambda p=pasta: self.remover_pasta_lista(p)
+            )
+            btn_del.pack(side="right", padx=5)
+
+    def buscar_nome_drive_thread(self):
+        link = self.entry_drive_link_servir.get().strip()
+        if not link:
+            messagebox.showwarning("Aviso", "Insira o link ou ID da pasta do Google Drive primeiro!")
+            return
+            
+        def buscar():
+            self.entry_drive_nome_servir.configure(state="normal")
+            self.entry_drive_nome_servir.delete(0, 'end')
+            self.entry_drive_nome_servir.insert(0, "Buscando nome no Drive...")
+            self.entry_drive_nome_servir.configure(state="disabled")
+            
+            nome = self.obter_nome_pasta_drive_servir(link)
+            
+            self.entry_drive_nome_servir.configure(state="normal")
+            self.entry_drive_nome_servir.delete(0, 'end')
+            if nome:
+                self.entry_drive_nome_servir.insert(0, nome)
+            else:
+                self.entry_drive_nome_servir.insert(0, "")
+                messagebox.showwarning(
+                    "Aviso", 
+                    "Não foi possível obter o nome da pasta. Certifique-se de que está autenticado e o link é válido, ou digite o nome manualmente."
+                )
+                
+        threading.Thread(target=buscar, daemon=True).start()
+
+    def obter_nome_pasta_drive_servir(self, link_ou_id):
+        if not GOOGLE_DRIVE_DISPONIVEL:
+            return None
+        folder_id = self.extrair_id_pasta_drive(link_ou_id)
+        if folder_id == 'root':
+            return "Raiz do Google Drive"
+            
+        caminho_credenciais = os.path.join(os.path.dirname(os.path.abspath(__file__)), "credentials.json")
+        if not os.path.exists(caminho_credenciais):
+            return None
+            
+        SCOPES = ['https://www.googleapis.com/auth/drive']
+        token_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'token.json')
+        creds = None
+        if os.path.exists(token_path):
+            try:
+                creds = Credentials.from_authorized_user_file(token_path, SCOPES)
+            except Exception:
+                pass
+        
+        if not creds or not creds.valid:
+            if creds and creds.expired and creds.refresh_token:
+                try:
+                    creds.refresh(Request())
+                except Exception:
+                    return None
+            else:
+                return None
+            
+        try:
+            service = build('drive', 'v3', credentials=creds)
+            pasta_meta = service.files().get(fileId=folder_id, fields='name').execute()
+            return pasta_meta.get('name')
+        except Exception as e:
+            print(f"Erro ao obter nome da pasta no Drive: {e}")
+            return None
+
+    def criar_novo_servir(self):
+        if self.servir_em_edicao:
+            self.salvar_edicao_servir()
+            return
+
+        nome_servir = self.entry_nome_servir.get().strip()
+        if not nome_servir:
+            messagebox.showwarning("Aviso", "Por favor, insira o nome do Servir!")
+            return
+            
+        for char in ['/', '\\\\', ':', '*', '?', '"', '<', '>', '|']:
+            if char in nome_servir:
+                messagebox.showwarning("Aviso", f"O nome do Servir não pode conter o caractere '{char}'!")
+                return
+                
+        if not self.lista_voluntarios_temp:
+            messagebox.showwarning("Aviso", "Por favor, adicione pelo menos um voluntário!")
+            return
+            
+        drive_link = self.entry_drive_link_servir.get().strip()
+        drive_nome = self.entry_drive_nome_servir.get().strip()
+        if drive_link and not drive_nome:
+            drive_nome = "Pasta do Google Drive"
+            
+        novo_servir = {
+            "id": str(int(time.time())),
+            "nome": nome_servir,
+            "data_criacao": date.today().isoformat(),
+            "voluntarios": self.lista_voluntarios_temp.copy(),
+            "pastas_predefinidas": self.lista_pastas_temp.copy(),
+            "drive_link": drive_link,
+            "drive_nome": drive_nome
+        }
+        
+        self.dias_servir.append(novo_servir)
+        self.salvar_dias_servir(self.dias_servir)
+        
+        # Pré-cria a estrutura de pastas localmente assim que o servir é criado (apenas as categorias)
+        bases_criar = [self.destino_padrao_app]
+        for p in self.pastas_local:
+            bases_criar.append(p['caminho'])
+            
+        for base in bases_criar:
+            if not base:
+                continue
+            base_servir = os.path.join(base, nome_servir)
+            os.makedirs(base_servir, exist_ok=True)
+            pastas_cats = novo_servir.get("pastas_predefinidas", [])
+            for cat in pastas_cats:
+                os.makedirs(os.path.join(base_servir, cat), exist_ok=True)
+        
+        # Limpa o formulário
+        self.entry_nome_servir.delete(0, 'end')
+        self.entry_drive_link_servir.delete(0, 'end')
+        self.entry_drive_nome_servir.delete(0, 'end')
+        self.lista_voluntarios_temp.clear()
+        self.lista_pastas_temp.clear()
+        self.atualizar_lista_vol_ui()
+        self.atualizar_lista_pastas_ui()
+        
+        self.atualizar_lista_dias_ui()
+        
+        # Ativa o servir recém criado
+        self.ativar_servir_dia(novo_servir)
+
+    def editar_servir_dia(self, servir):
+        self.servir_em_edicao = servir
+        
+        # Altera o título do formulário para indicar Edição
+        self.lbl_dir_titulo.configure(text=f"✏️ Editar Servir: {servir.get('nome')}", text_color="#3498db")
+        
+        # Preenche os campos do formulário
+        self.entry_nome_servir.delete(0, 'end')
+        self.entry_nome_servir.insert(0, servir.get('nome', ''))
+        
+        self.lista_voluntarios_temp = servir.get('voluntarios', []).copy()
+        self.atualizar_lista_vol_ui()
+        
+        self.lista_pastas_temp = servir.get('pastas_predefinidas', []).copy()
+        self.atualizar_lista_pastas_ui()
+        
+        self.entry_drive_link_servir.delete(0, 'end')
+        self.entry_drive_link_servir.insert(0, servir.get('drive_link', ''))
+        
+        self.entry_drive_nome_servir.delete(0, 'end')
+        self.entry_drive_nome_servir.insert(0, servir.get('drive_nome', ''))
+        
+        # Altera o botão de ação principal
+        self.btn_criar_servir.configure(
+            text="💾 Salvar Alterações",
+            fg_color="#3498db",
+            hover_color="#2980b9"
+        )
+        
+        # Mostra o botão Cancelar se não existir
+        if not hasattr(self, 'btn_cancelar_edicao') or not self.btn_cancelar_edicao.winfo_exists():
+            self.btn_cancelar_edicao = ctk.CTkButton(
+                self.btn_criar_servir.master,
+                text="❌ Cancelar Edição",
+                font=ctk.CTkFont(size=12, weight="bold"),
+                fg_color="#7f8c8d",
+                hover_color="#95a5a6",
+                height=32,
+                command=self.cancelar_edicao_servir
+            )
+            self.btn_cancelar_edicao.pack(fill="x", padx=10, pady=(5, 10))
+
+    def cancelar_edicao_servir(self):
+        self.servir_em_edicao = None
+        
+        # Restaura título do formulário
+        self.lbl_dir_titulo.configure(text="Criar Novo Dia do Servir", text_color="#2ecc71")
+        
+        # Limpa os campos
+        self.entry_nome_servir.delete(0, 'end')
+        self.lista_voluntarios_temp = []
+        self.atualizar_lista_vol_ui()
+        
+        self.lista_pastas_temp = []
+        self.atualizar_lista_pastas_ui()
+        
+        self.entry_drive_link_servir.delete(0, 'end')
+        self.entry_drive_nome_servir.delete(0, 'end')
+        
+        # Restaura o botão de ação principal
+        self.btn_criar_servir.configure(
+            text="🚀 Criar e Ativar Novo Servir",
+            fg_color="#2ecc71",
+            hover_color="#27ae60"
+        )
+        
+        # Remove o botão cancelar se ele existir
+        if hasattr(self, 'btn_cancelar_edicao') and self.btn_cancelar_edicao.winfo_exists():
+            self.btn_cancelar_edicao.destroy()
+
+    def salvar_edicao_servir(self):
+        if not self.servir_em_edicao:
+            return
+            
+        nome_servir = self.entry_nome_servir.get().strip()
+        if not nome_servir:
+            messagebox.showwarning("Aviso", "Por favor, insira o nome do Servir!")
+            return
+            
+        for char in ['/', '\\\\', ':', '*', '?', '"', '<', '>', '|']:
+            if char in nome_servir:
+                messagebox.showwarning("Aviso", f"O nome do Servir não pode conter o caractere '{char}'!")
+                return
+                
+        if not self.lista_voluntarios_temp:
+            messagebox.showwarning("Aviso", "Por favor, adicione pelo menos um voluntário!")
+            return
+            
+        drive_link = self.entry_drive_link_servir.get().strip()
+        drive_nome = self.entry_drive_nome_servir.get().strip()
+        if drive_link and not drive_nome:
+            drive_nome = "Pasta do Google Drive"
+            
+        # Atualiza os dados no objeto servir em edicao
+        for idx, servir in enumerate(self.dias_servir):
+            if servir.get('id') == self.servir_em_edicao.get('id'):
+                self.dias_servir[idx]['nome'] = nome_servir
+                self.dias_servir[idx]['voluntarios'] = self.lista_voluntarios_temp.copy()
+                self.dias_servir[idx]['pastas_predefinidas'] = self.lista_pastas_temp.copy()
+                self.dias_servir[idx]['drive_link'] = drive_link
+                self.dias_servir[idx]['drive_nome'] = drive_nome
+                
+        # Salva no arquivo
+        self.salvar_dias_servir(self.dias_servir)
+        
+        # Se adicionou novas pastas de categoria, pré-criamos a estrutura de pastas localmente
+        bases_criar = [self.destino_padrao_app]
+        for p in self.pastas_local:
+            bases_criar.append(p['caminho'])
+            
+        for base in bases_criar:
+            if not base:
+                continue
+            base_servir = os.path.join(base, nome_servir)
+            os.makedirs(base_servir, exist_ok=True)
+            for cat in self.lista_pastas_temp:
+                os.makedirs(os.path.join(base_servir, cat), exist_ok=True)
+                
+        # Limpa o formulário e encerra a edição
+        self.servir_em_edicao = None
+        
+        self.entry_nome_servir.delete(0, 'end')
+        self.entry_drive_link_servir.delete(0, 'end')
+        self.entry_drive_nome_servir.delete(0, 'end')
+        self.lista_voluntarios_temp.clear()
+        self.lista_pastas_temp.clear()
+        self.atualizar_lista_vol_ui()
+        self.atualizar_lista_pastas_ui()
+        
+        # Restaura título do formulário
+        self.lbl_dir_titulo.configure(text="Criar Novo Dia do Servir", text_color="#2ecc71")
+        
+        # Restaura o botão de ação principal
+        self.btn_criar_servir.configure(
+            text="🚀 Criar e Ativar Novo Servir",
+            fg_color="#2ecc71",
+            hover_color="#27ae60"
+        )
+        
+        # Remove o botão cancelar se ele existir
+        if hasattr(self, 'btn_cancelar_edicao') and self.btn_cancelar_edicao.winfo_exists():
+            self.btn_cancelar_edicao.destroy()
+            
+        self.atualizar_lista_dias_ui()
+        messagebox.showinfo("Sucesso", "Dia do Servir editado com sucesso!")
+
+    def atualizar_lista_dias_ui(self):
+        for widget in self.scroll_dias.winfo_children():
+            widget.destroy()
+            
+        if not self.dias_servir:
+            lbl_vazio = ctk.CTkLabel(
+                self.scroll_dias, 
+                text="Nenhum dia de servir cadastrado.\n\nPreencha o formulário ao lado para começar!", 
+                text_color="gray",
+                font=ctk.CTkFont(size=12)
+            )
+            lbl_vazio.pack(pady=40)
+            return
+            
+        for servir in reversed(self.dias_servir):
+            frame_item = ctk.CTkFrame(self.scroll_dias, fg_color="#2b2b2b", corner_radius=8, border_width=1, border_color="#3a3a3a")
+            frame_item.pack(fill="x", pady=6, padx=5)
+            
+            data_formatada = servir.get("data_criacao", "")
+            try:
+                partes = data_formatada.split("-")
+                if len(partes) == 3:
+                    data_formatada = f"{partes[2]}/{partes[1]}/{partes[0]}"
+            except Exception:
+                pass
+                
+            voluntarios_str = ", ".join(servir.get("voluntarios", []))
+            pastas_str = ", ".join(servir.get("pastas_predefinidas", []))
+            if not pastas_str:
+                pastas_str = "(Nenhuma pasta configurada)"
+                
+            drive_str = f"☁️ Drive: {servir.get('drive_nome')}" if servir.get("drive_link") else "☁️ Sem Google Drive configurado"
+            
+            texto_info = (
+                f"📅 {data_formatada} | {servir.get('nome')}\n"
+                f"👥 Voluntários: {voluntarios_str}\n"
+                f"📁 Pastas: {pastas_str}\n"
+                f"{drive_str}"
+            )
+            
+            lbl_info = ctk.CTkLabel(
+                frame_item, 
+                text=texto_info, 
+                font=ctk.CTkFont(size=11),
+                justify="left",
+                anchor="w"
+            )
+            lbl_info.pack(fill="x", padx=12, pady=(10, 5))
+            
+            # Sub-frame de ações
+            frame_acoes = ctk.CTkFrame(frame_item, fg_color="transparent")
+            frame_acoes.pack(fill="x", padx=12, pady=(0, 10))
+            
+            btn_entrar = ctk.CTkButton(
+                frame_acoes, 
+                text="▶ Iniciar Importação", 
+                fg_color="#2ecc71", 
+                hover_color="#27ae60",
+                font=ctk.CTkFont(size=11, weight="bold"),
+                height=26,
+                command=lambda s=servir: self.ativar_servir_dia(s)
+            )
+            btn_entrar.pack(side="left", fill="x", expand=True, padx=(0, 4))
+            
+            btn_editar = ctk.CTkButton(
+                frame_acoes, 
+                text="✏️ Editar", 
+                fg_color="#3498db", 
+                hover_color="#2980b9",
+                font=ctk.CTkFont(size=11, weight="bold"),
+                width=65,
+                height=26,
+                command=lambda s=servir: self.editar_servir_dia(s)
+            )
+            btn_editar.pack(side="left", padx=(0, 4))
+            
+            btn_excluir = ctk.CTkButton(
+                frame_acoes, 
+                text="🗑️ Excluir", 
+                fg_color="#e74c3c", 
+                hover_color="#c0392b",
+                font=ctk.CTkFont(size=11, weight="bold"),
+                width=65,
+                height=26,
+                command=lambda s=servir: self.excluir_servir_dia(s)
+            )
+            btn_excluir.pack(side="right")
+
+    def excluir_servir_dia(self, servir):
+        confirmar = messagebox.askyesno(
+            "Confirmar Exclusão", 
+            f"Deseja realmente excluir a configuração do dia de servir '{servir.get('nome')}'?\n\n"
+            "Esta ação apagará apenas esta configuração no painel, sem apagar nenhuma foto salva."
+        )
+        if confirmar:
+            self.dias_servir = [d for d in self.dias_servir if d.get('id') != servir.get('id')]
+            self.salvar_dias_servir(self.dias_servir)
+            self.atualizar_lista_dias_ui()
+
+    def ativar_servir_dia(self, servir):
+        self.active_servir = servir
+        self.mostrar_tela_descarregamento()
+
+    # --- TELA DE DESCARREGAMENTO ---
+    def mostrar_tela_descarregamento(self):
+        for widget in self.winfo_children():
+            if widget != self.monitor_thread:
+                try:
+                    widget.pack_forget()
+                    widget.grid_forget()
+                    widget.destroy()
+                except Exception:
+                    pass
+                    
+        self.geometry("750x820")
+        self.minsize(750, 820)
+        
+        self.container_principal = ctk.CTkFrame(self, fg_color="transparent")
+        self.container_principal.pack(fill="both", expand=True, padx=25, pady=15)
+        
+        # 1. HEADER FRAME
+        self.frame_header = ctk.CTkFrame(self.container_principal, fg_color="transparent")
+        self.frame_header.pack(fill="x", pady=(0, 5))
+        
+        self.frame_header.grid_columnconfigure(0, weight=0)
+        self.frame_header.grid_columnconfigure(1, weight=1)
+        self.frame_header.grid_columnconfigure(2, weight=0)
+
+        # Botão Voltar ao Painel
+        self.btn_voltar = ctk.CTkButton(
+            self.frame_header, 
+            text="⬅ Voltar", 
+            font=ctk.CTkFont(size=11, weight="bold"), 
+            height=26, 
+            width=70,
+            fg_color="#34495e", 
+            hover_color="#2c3e50", 
+            command=self.mostrar_pagina_inicial
+        )
+        self.btn_voltar.grid(row=0, column=0, sticky="w")
+
+        # Título central
+        self.lbl_titulo = ctk.CTkLabel(
+            self.frame_header, 
+            text="Descarregador de Fotos", 
+            font=ctk.CTkFont(size=18, weight="bold")
+        )
+        self.lbl_titulo.grid(row=0, column=1, sticky="nsew")
+
+        # Indicador de Servir Ativo ou Modo Avulso
+        self.frame_status_servir = ctk.CTkFrame(self.frame_header, fg_color="transparent")
+        self.frame_status_servir.grid(row=0, column=2, sticky="e")
+        
+        if self.active_servir:
+            lbl_servir_nome = ctk.CTkLabel(
+                self.frame_status_servir, 
+                text=f"Servir: {self.active_servir.get('nome')}", 
+                font=ctk.CTkFont(size=11, weight="bold"),
+                text_color="#2ecc71"
+            )
+            lbl_servir_nome.pack(side="left", padx=5)
+            
+            self.btn_abrir_raiz = ctk.CTkButton(
+                self.frame_status_servir,
+                text="📂 Abrir Pasta do Servir",
+                font=ctk.CTkFont(size=11, weight="bold"),
+                height=26,
+                fg_color="#34495e",
+                hover_color="#2c3e50",
+                command=self.abrir_pasta_raiz_servir
+            )
+            self.btn_abrir_raiz.pack(side="left", padx=5)
+
+            self.btn_finalizar_servir = ctk.CTkButton(
+                self.frame_status_servir,
+                text="🏁 Finalizar Servir",
+                font=ctk.CTkFont(size=11, weight="bold"),
+                height=26,
+                fg_color="#d35400",
+                hover_color="#e67e22",
+                command=self.finalizar_servir_thread
+            )
+            self.btn_finalizar_servir.pack(side="left", padx=5)
+        else:
+            lbl_servir_nome = ctk.CTkLabel(
+                self.frame_status_servir, 
+                text="Modo Avulso", 
+                font=ctk.CTkFont(size=11, weight="bold"),
+                text_color="#e67e22"
+            )
+            lbl_servir_nome.pack(side="right")
+
+        # 2. STATUS DO CARTÃO SD
+        self.lbl_status = ctk.CTkLabel(
+            self.container_principal, 
+            text="Aguardando inserção do Cartão SD...", 
+            text_color="orange", 
+            font=ctk.CTkFont(size=12)
+        )
+        self.lbl_status.pack(pady=(0, 6))
+
+        # 3. SELEÇÃO DO FOTÓGRAFO
+        if self.active_servir:
+            self.lbl_nome = ctk.CTkLabel(self.container_principal, text="Selecione o Fotógrafo (Voluntário):", font=ctk.CTkFont(weight="bold"))
+            self.lbl_nome.pack(anchor="w", padx=30)
+            
+            vols = self.active_servir.get("voluntarios", [])
+            opcoes_vols = vols.copy()
+            opcoes_vols.append("Outro...")
+            
+            self.combo_fotografo_var = ctk.StringVar(value=opcoes_vols[0] if opcoes_vols else "Outro...")
+            self.combo_fotografo = ctk.CTkOptionMenu(
+                self.container_principal,
+                values=opcoes_vols,
+                variable=self.combo_fotografo_var,
+                command=self.ao_selecionar_fotografo,
+                height=28
+            )
+            self.combo_fotografo.pack(pady=(0, 4), padx=30, fill="x")
+            
+            # Campo de texto extra caso selecione "Outro..."
+            self.entry_nome_outro = ctk.CTkEntry(
+                self.container_principal, 
+                height=28, 
+                placeholder_text="Digite o nome do fotógrafo alternativo..."
+            )
+            self.entry_nome_outro.bind("<KeyRelease>", self.atualizar_caminho_final_exibicao)
+            
+            if self.combo_fotografo_var.get() == "Outro...":
+                self.entry_nome_outro.pack(pady=(2, 4), padx=30, fill="x")
+        else:
+            self.lbl_nome = ctk.CTkLabel(self.container_principal, text="Nome do Fotógrafo:", font=ctk.CTkFont(weight="bold"))
+            self.lbl_nome.pack(anchor="w", padx=30)
+            
+            self.entry_nome = ctk.CTkEntry(
+                self.container_principal, 
+                width=520, 
+                height=28, 
+                placeholder_text="Ex: JoaoSilva"
+            )
+            self.entry_nome.bind("<KeyRelease>", self.atualizar_caminho_final_exibicao)
+            self.entry_nome.pack(pady=(0, 4), padx=30, fill="x")
+
+        # 4. PASTAS NO CARTÃO SD
+        self.frame_lbl_pastas = ctk.CTkFrame(self.container_principal, fg_color="transparent")
+        self.frame_lbl_pastas.pack(fill="x", padx=30, pady=(4, 2))
+
+        self.lbl_pastas = ctk.CTkLabel(self.frame_lbl_pastas, text="Pastas no Cartão SD:", font=ctk.CTkFont(weight="bold"))
+        self.lbl_pastas.pack(side="left")
+
+        self.btn_manual = ctk.CTkButton(
+            self.frame_lbl_pastas, 
+            text="📂 Origem Manual", 
+            height=20, 
+            font=ctk.CTkFont(size=10, weight="bold"),
+            fg_color="#34495e",
+            hover_color="#2c3e50",
+            command=self.selecionar_origem_manual
+        )
+        self.btn_manual.pack(side="right")
+        
+        self.frame_pastas = ctk.CTkScrollableFrame(self.container_principal, width=500, height=80)
+        self.frame_pastas.pack(pady=(0, 4), padx=30, fill="both", expand=True)
+        
+        self.lbl_vazio = ctk.CTkLabel(self.frame_pastas, text="Nenhum cartão detectado.")
+        self.lbl_vazio.pack(pady=15)
+
+        # 5. CONFIGURAÇÃO DE CATEGORIA (Somente para Servir)
+        if self.active_servir:
+            self.lbl_categoria = ctk.CTkLabel(self.container_principal, text="Pasta de Destino (Categoria):", font=ctk.CTkFont(weight="bold"))
+            self.lbl_categoria.pack(anchor="w", padx=30, pady=(4, 0))
+            
+            opcoes_cat = self.active_servir.get("pastas_predefinidas", []).copy()
+            opcoes_cat.append("Raiz (Nenhuma)")
+            
+            self.combo_categoria_var = ctk.StringVar(value=opcoes_cat[0] if opcoes_cat else "Raiz (Nenhuma)")
+            self.combo_categoria = ctk.CTkOptionMenu(
+                self.container_principal,
+                values=opcoes_cat,
+                variable=self.combo_categoria_var,
+                height=28
+            )
+            self.combo_categoria.pack(pady=(0, 4), padx=30, fill="x")
+
+        # 6. PASTA DE DESTINO NO COMPUTADOR
+        self.destino_path.set(self.destino_padrao_app)
+
+
+
+        # Checkbox subpasta (Apenas Modo Avulso)
+        if not self.active_servir:
+            self.criar_pasta_fotografo_var = ctk.BooleanVar(value=True)
+            self.chk_criar_pasta_fotografo = ctk.CTkCheckBox(self.container_principal, text="Criar subpasta local com o nome do fotógrafo", variable=self.criar_pasta_fotografo_var)
+            self.chk_criar_pasta_fotografo.pack(anchor="w", padx=30, pady=(0, 4))
+            
+        # 7. CAMINHO FINAL RESOLVIDO
+        self.lbl_caminho_final = ctk.CTkLabel(self.container_principal, text="Pasta Final de Destino (Será criada automaticamente):", font=ctk.CTkFont(weight="bold", size=12), text_color="#3498db")
+        self.lbl_caminho_final.pack(anchor="w", padx=30, pady=(4, 0))
+        
+        self.entry_caminho_final = ctk.CTkEntry(
+            self.container_principal,
+            height=28,
+            state="readonly",
+            text_color="#2ecc71"
+        )
+        self.entry_caminho_final.pack(pady=(0, 6), padx=30, fill="x")
+
+        # 8. PROGRESSO
+        self.lbl_progresso = ctk.CTkLabel(self.container_principal, text="Progresso: 0%")
+        self.lbl_progresso.pack(anchor="w", padx=30)
+        self.progressbar = ctk.CTkProgressBar(self.container_principal, width=520, height=8)
+        self.progressbar.pack(pady=(1, 6), padx=30, fill="x")
+        self.progressbar.set(0)
+
+        # 9. BOTOES DE AÇÃO
+        self.frame_botoes = ctk.CTkFrame(self.container_principal, fg_color="transparent")
+        self.frame_botoes.pack(pady=(2, 1), padx=30, fill="x")
+
+        self.btn_iniciar = ctk.CTkButton(
+            self.frame_botoes, 
+            text="Iniciar Transferência", 
+            font=ctk.CTkFont(size=13, weight="bold"), 
+            height=36, 
+            fg_color="green", 
+            hover_color="darkgreen", 
+            command=self.iniciar_transferencia
+        )
+        self.btn_iniciar.pack(fill="x", expand=True)
+
+        self.frame_botoes_secundarios = ctk.CTkFrame(self.container_principal, fg_color="transparent")
+        self.frame_botoes_secundarios.pack(pady=(1, 4), padx=30, fill="x")
+
+        self.btn_selecionar = ctk.CTkButton(
+            self.frame_botoes_secundarios, 
+            text="🔍 Selecionar / Revisar Fotos", 
+            height=36, 
+            font=ctk.CTkFont(size=12, weight="bold"), 
+            fg_color="#1f538d", 
+            hover_color="#14375e", 
+            command=self.abrir_revisor, 
+            state="disabled"
+        )
+        self.btn_selecionar.pack(side="left", fill="x", expand=True, padx=(0, 10))
+
+        self.btn_abrir = ctk.CTkButton(
+            self.frame_botoes_secundarios, 
+            text="📁 Abrir Pasta", 
+            height=36, 
+            font=ctk.CTkFont(size=12), 
+            command=self.abrir_pasta, 
+            state="disabled"
+        )
+        self.btn_abrir.pack(side="right", fill="x", expand=True)
+
+        # 10. GOOGLE DRIVE SELECTION & UPLOAD
+        self.lbl_drive_link = ctk.CTkLabel(self.container_principal, text="Pasta de Destino no Google Drive:")
+        self.lbl_drive_link.pack(anchor="w", padx=30, pady=(2, 1))
+        
+        self.combo_drive_var = ctk.StringVar()
+        self.combo_drive = ctk.CTkOptionMenu(
+            self.container_principal, 
+            values=[],
+            variable=self.combo_drive_var,
+            width=520,
+            height=28
+        )
+        self.combo_drive.pack(pady=(0, 4), padx=30, fill="x")
+        self.recarregar_combo_drive()
+
+        self.btn_enviar_drive = ctk.CTkButton(
+            self.container_principal, 
+            text="📤 Enviar Fotos Selecionadas para o Google Drive", 
+            height=36, 
+            font=ctk.CTkFont(size=12, weight="bold"), 
+            fg_color="#4285F4", 
+            hover_color="#357ae8", 
+            command=self.iniciar_upload_drive, 
+            state="disabled"
+        )
+        self.btn_enviar_drive.pack(pady=(2, 10), padx=30, fill="x")
+
+        # Inicia traces para reatividade
+        self.iniciar_traces()
+        self.atualizar_caminho_final_exibicao()
+
+        if self.cartao_detectado and self.drive_path:
+            self.atualizar_ui_cartao_detectado(self.drive_path, e_manual=self.origem_manual)
+        else:
+            self.atualizar_ui_cartao_removido()
+
+    def ao_selecionar_fotografo(self, opcao):
+        if opcao == "Outro...":
+            self.entry_nome_outro.pack(pady=(2, 4), padx=30, fill="x")
+        else:
+            self.entry_nome_outro.pack_forget()
+        self.atualizar_caminho_final_exibicao()
+
+    def obter_nome_fotografo_ativo(self):
+        if self.active_servir:
+            if hasattr(self, 'combo_fotografo_var'):
+                escolha = self.combo_fotografo_var.get()
+                if escolha == "Outro...":
+                    if hasattr(self, 'entry_nome_outro') and self.entry_nome_outro.winfo_exists():
+                        return self.entry_nome_outro.get().strip()
+                    return ""
+                return escolha
+            return ""
+        else:
+            if hasattr(self, 'entry_nome') and self.entry_nome.winfo_exists():
+                return self.entry_nome.get().strip()
+            return ""
+
+    def calcular_caminho_final(self, base_destino, nome_fotografo):
+        if not base_destino or not nome_fotografo:
+            return base_destino
+            
+        if self.active_servir:
+            nome_servir = self.active_servir.get('nome')
+            base_servir = os.path.join(base_destino, nome_servir)
+            categoria = self.combo_categoria_var.get()
+            if categoria == "Raiz (Nenhuma)":
+                destino = os.path.join(base_servir, nome_fotografo)
+            else:
+                destino = os.path.join(base_servir, categoria, nome_fotografo)
+        else:
+            if self.criar_pasta_fotografo_var.get():
+                destino = os.path.join(base_destino, nome_fotografo)
+            else:
+                destino = base_destino
+                
+        # Lógica de segunda/consecutiva ingestão
+        tem_pasta_fotografo = False
+        if self.active_servir:
+            tem_pasta_fotografo = True
+        else:
+            if self.criar_pasta_fotografo_var.get():
+                tem_pasta_fotografo = True
+                
+        if tem_pasta_fotografo and nome_fotografo != "(Aguardando nome do fotógrafo)":
+            ja_descarregou = False
+            if os.path.exists(destino):
+                for root, dirs, files in os.walk(destino):
+                    for f in files:
+                        if f.lower().endswith(('.png', '.jpg', '.jpeg', '.cr2', '.nef', '.arw', '.cr3', '.mp4')):
+                            ja_descarregou = True
+                            break
+                    if ja_descarregou:
+                        break
+            
+            if ja_descarregou:
+                subfolder_num = 2
+                while os.path.exists(os.path.join(destino, f"{nome_fotografo}_{subfolder_num}")):
+                    subfolder_num += 1
+                destino = os.path.join(destino, f"{nome_fotografo}_{subfolder_num}")
+                
+        return destino
+
+    def atualizar_caminho_final_exibicao(self, *args):
+        try:
+            base_destino = self.destino_path.get()
+            if not base_destino:
+                final_path = "Selecione a pasta de destino acima..."
+            else:
+                nome_fotografo = self.obter_nome_fotografo_ativo()
+                if not nome_fotografo:
+                    nome_fotografo = "(Aguardando nome do fotógrafo)"
+                final_path = self.calcular_caminho_final(base_destino, nome_fotografo)
+                
+            if hasattr(self, 'entry_caminho_final') and self.entry_caminho_final.winfo_exists():
+                self.entry_caminho_final.configure(state="normal")
+                self.entry_caminho_final.delete(0, 'end')
+                self.entry_caminho_final.insert(0, final_path)
+                self.entry_caminho_final.configure(state="readonly")
+        except Exception as e:
+            print(f"Erro ao atualizar caminho final: {e}")
+
+    def iniciar_traces(self):
+        # Remove traces antigos se existirem para evitar duplicados
+        if hasattr(self, '_trace_ids'):
+            for var, trace_id in self._trace_ids:
+                try:
+                    var.trace_remove("write", trace_id)
+                except Exception:
+                    pass
+        self._trace_ids = []
+        
+        # Registra novos traces de forma reativa
+        try:
+            tid = self.destino_path.trace_add("write", self.atualizar_caminho_final_exibicao)
+            self._trace_ids.append((self.destino_path, tid))
+            
+            if self.active_servir:
+                tid1 = self.combo_fotografo_var.trace_add("write", self.atualizar_caminho_final_exibicao)
+                self._trace_ids.append((self.combo_fotografo_var, tid1))
+                
+                tid3 = self.combo_categoria_var.trace_add("write", self.atualizar_caminho_final_exibicao)
+                self._trace_ids.append((self.combo_categoria_var, tid3))
+            else:
+                tid2 = self.criar_pasta_fotografo_var.trace_add("write", self.atualizar_caminho_final_exibicao)
+                self._trace_ids.append((self.criar_pasta_fotografo_var, tid2))
+        except Exception as e:
+            print(f"Erro ao registrar traces: {e}")
 
     def registrar_historico(self, total_selecionadas=None):
         try:
@@ -1136,6 +2368,8 @@ class ImportadorFotosApp(ctk.CTk):
                 except Exception:
                     pass
             
+            nome_fotografo = self.obter_nome_fotografo_ativo()
+            
             # Se for uma atualização de revisão
             if total_selecionadas is not None and historico:
                 # Procura a última entrada deste fotógrafo e destino para atualizar
@@ -1145,10 +2379,18 @@ class ImportadorFotosApp(ctk.CTk):
                         break
             else:
                 # Nova entrada de descarregamento
-                nome_fotografo = self.entry_nome.get().strip()
                 destino = self.destino_path.get()
-                if self.criar_pasta_fotografo_var.get():
-                    destino = os.path.join(destino, nome_fotografo)
+                
+                if self.active_servir:
+                    nome_servir = self.active_servir.get('nome')
+                    categoria = self.combo_categoria_var.get()
+                    if categoria == "Raiz (Nenhuma)":
+                        destino = os.path.join(destino, nome_servir, nome_fotografo)
+                    else:
+                        destino = os.path.join(destino, nome_servir, categoria, nome_fotografo)
+                else:
+                    if self.criar_pasta_fotografo_var.get():
+                        destino = os.path.join(destino, nome_fotografo)
                 
                 # Armazena na sessão
                 self.sessao_fotografo = nome_fotografo
@@ -1176,21 +2418,30 @@ class ImportadorFotosApp(ctk.CTk):
 
     def recarregar_combo_drive(self):
         self.pastas_drive = self.carregar_config_pastas()
-        valores_menu = ["Raiz do Google Drive (Padrão)"]
+        valores_menu = []
+        if self.active_servir and self.active_servir.get('drive_link'):
+            valores_menu.append(f"Pasta do Servir: {self.active_servir.get('drive_nome', 'Configurada')}")
+        valores_menu.append("Raiz do Google Drive (Padrão)")
         for p in self.pastas_drive:
             valores_menu.append(p['nome'])
-        self.combo_drive.configure(values=valores_menu)
-        
-        # Se a opção atualmente selecionada não existir mais na nova lista, reseta para o padrão
+            
+        if hasattr(self, 'combo_drive'):
+            self.combo_drive.configure(values=valores_menu)
+            
         opcao_atual = self.combo_drive_var.get()
         if opcao_atual not in valores_menu:
-            self.combo_drive_var.set(valores_menu[0])
+            if valores_menu:
+                self.combo_drive_var.set(valores_menu[0])
+            else:
+                self.combo_drive_var.set("Raiz do Google Drive (Padrão)")
 
     def obter_link_drive_selecionado(self):
         opcao_selecionada = self.combo_drive_var.get()
+        if self.active_servir and self.active_servir.get('drive_link'):
+            if opcao_selecionada.startswith("Pasta do Servir:"):
+                return self.active_servir.get('drive_link')
         if opcao_selecionada == "Raiz do Google Drive (Padrão)":
             return ""
-        # Procura a pasta correspondente pelo nome
         for p in self.pastas_drive:
             if p['nome'] == opcao_selecionada:
                 return p['link']
@@ -1198,7 +2449,12 @@ class ImportadorFotosApp(ctk.CTk):
 
     def recarregar_combo_destino(self):
         self.pastas_local = self.carregar_config_pastas_local()
+        self.destino_path.set(self.destino_padrao_app)
+        if not hasattr(self, 'combo_destino') or not self.combo_destino.winfo_exists():
+            return
+            
         valores_menu = []
+        valores_menu.append("Pasta do Aplicativo (Padrão)")
         for p in self.pastas_local:
             valores_menu.append(p['nome'])
         valores_menu.append("Escolher pasta personalizada...")
@@ -1206,14 +2462,12 @@ class ImportadorFotosApp(ctk.CTk):
         
         opcao_atual = self.combo_destino_var.get()
         if opcao_atual not in valores_menu:
-            if self.pastas_local:
-                self.combo_destino_var.set(self.pastas_local[0]['nome'])
-                self.destino_path.set(self.pastas_local[0]['caminho'])
-            else:
-                self.combo_destino_var.set("Escolher pasta personalizada...")
-                self.destino_path.set("")
+            self.combo_destino_var.set("Pasta do Aplicativo (Padrão)")
+            self.destino_path.set(self.destino_padrao_app)
         else:
-            if opcao_atual != "Escolher pasta personalizada...":
+            if opcao_atual == "Pasta do Aplicativo (Padrão)":
+                self.destino_path.set(self.destino_padrao_app)
+            elif opcao_atual != "Escolher pasta personalizada...":
                 for p in self.pastas_local:
                     if p['nome'] == opcao_atual:
                         self.destino_path.set(p['caminho'])
@@ -1222,247 +2476,16 @@ class ImportadorFotosApp(ctk.CTk):
     def ao_alterar_destino_combo(self, opcao):
         if opcao == "Escolher pasta personalizada...":
             self.selecionar_destino()
+        elif opcao == "Pasta do Aplicativo (Padrão)":
+            self.destino_path.set(self.destino_padrao_app)
         else:
             for p in self.pastas_local:
                 if p['nome'] == opcao:
                     self.destino_path.set(p['caminho'])
                     break
-
-    def setup_ui(self):
-        # Frame do Cabeçalho para alinhar o título e os botões Novo e Config no topo
-        self.frame_header = ctk.CTkFrame(self, fg_color="transparent")
-        self.frame_header.pack(fill="x", padx=40, pady=(8, 1))
-        
-        self.frame_header.grid_columnconfigure(0, weight=0)
-        self.frame_header.grid_columnconfigure(1, weight=1)
-        self.frame_header.grid_columnconfigure(2, weight=0)
-
-        # Container esquerdo do Cabeçalho para os botões Novo e Config
-        self.frame_header_botoes = ctk.CTkFrame(self.frame_header, fg_color="transparent")
-        self.frame_header_botoes.grid(row=0, column=0, sticky="w")
-
-        # Botão Novo Descarregamento no canto superior esquerdo
-        self.btn_novo = ctk.CTkButton(
-            self.frame_header_botoes, 
-            text="🔄 Novo", 
-            font=ctk.CTkFont(size=11, weight="bold"), 
-            height=26, 
-            width=70,
-            fg_color="#27ae60", 
-            hover_color="#219653", 
-            command=self.novo_descarregamento
-        )
-        self.btn_novo.pack(side="left", padx=(0, 5))
-
-        # Botão de Configuração do Líder
-        self.btn_config = ctk.CTkButton(
-            self.frame_header_botoes, 
-            text="⚙️ Config", 
-            font=ctk.CTkFont(size=11, weight="bold"), 
-            height=26, 
-            width=70,
-            fg_color="#34495e", 
-            hover_color="#2c3e50", 
-            command=self.abrir_configurador_drive
-        )
-        self.btn_config.pack(side="left")
-
-        # Título centralizado
-        self.lbl_titulo = ctk.CTkLabel(
-            self.frame_header, 
-            text="Descarregador de Fotos", 
-            font=ctk.CTkFont(size=20, weight="bold")
-        )
-        self.lbl_titulo.grid(row=0, column=1, sticky="nsew")
-
-        # Container direito do Cabeçalho para o botão Dados (alinhado à direita)
-        self.frame_header_dados = ctk.CTkFrame(self.frame_header, fg_color="transparent")
-        self.frame_header_dados.grid(row=0, column=2, sticky="e")
-
-        # Spacer para empurrar o botão Dados e balancear a largura com o lado esquerdo (145px total)
-        self.spacer_dados = ctk.CTkLabel(self.frame_header_dados, text="", width=75)
-        self.spacer_dados.pack(side="left")
-
-        # Botão de Dados/Métricas
-        self.btn_dados = ctk.CTkButton(
-            self.frame_header_dados, 
-            text="📊 Dados", 
-            font=ctk.CTkFont(size=11, weight="bold"), 
-            height=26, 
-            width=70,
-            fg_color="#34495e", 
-            hover_color="#2c3e50", 
-            command=self.abrir_historico_dados
-        )
-        self.btn_dados.pack(side="right")
-
-        self.lbl_status = ctk.CTkLabel(self, text="Aguardando inserção do Cartão SD...", text_color="orange", font=ctk.CTkFont(size=12))
-        self.lbl_status.pack(pady=(0, 4))
-
-        self.lbl_nome = ctk.CTkLabel(self, text="Nome do Fotógrafo:")
-        self.lbl_nome.pack(anchor="w", padx=40)
-        self.entry_nome = ctk.CTkEntry(self, width=520, height=28, placeholder_text="Ex: JoaoSilva")
-        self.entry_nome.pack(pady=(0, 4), padx=40, fill="x")
-
-        # Container para a label e o botão de seleção manual
-        self.frame_lbl_pastas = ctk.CTkFrame(self, fg_color="transparent")
-        self.frame_lbl_pastas.pack(fill="x", padx=40, pady=(0, 2))
-
-        self.lbl_pastas = ctk.CTkLabel(self.frame_lbl_pastas, text="Pastas no Cartão SD:")
-        self.lbl_pastas.pack(side="left")
-
-        self.btn_manual = ctk.CTkButton(
-            self.frame_lbl_pastas, 
-            text="📂 Origem Manual", 
-            height=20, 
-            font=ctk.CTkFont(size=10, weight="bold"),
-            fg_color="#34495e",
-            hover_color="#2c3e50",
-            command=self.selecionar_origem_manual
-        )
-        self.btn_manual.pack(side="right")
-        
-        self.frame_pastas = ctk.CTkScrollableFrame(self, width=500, height=60)
-        self.frame_pastas.pack(pady=(0, 4), padx=40, fill="both", expand=True)
-        
-        self.lbl_vazio = ctk.CTkLabel(self.frame_pastas, text="Nenhum cartão detectado.")
-        self.lbl_vazio.pack(pady=15)
-
-        self.lbl_destino = ctk.CTkLabel(self, text="Pasta de Destino no Computador:")
-        self.lbl_destino.pack(anchor="w", padx=40)
-        
-        self.frame_destino_combo = ctk.CTkFrame(self, fg_color="transparent")
-        self.frame_destino_combo.pack(fill="x", padx=40, pady=(0, 2))
-        
-        valores_destino = []
-        for p in self.pastas_local:
-            valores_destino.append(p['nome'])
-        valores_destino.append("Escolher pasta personalizada...")
-        
-        if self.pastas_local:
-            opcao_inicial = self.pastas_local[0]['nome']
-            self.destino_path.set(self.pastas_local[0]['caminho'])
-        else:
-            opcao_inicial = "Escolher pasta personalizada..."
-            self.destino_path.set("")
-            
-        self.combo_destino_var = ctk.StringVar(value=opcao_inicial)
-        self.combo_destino = ctk.CTkOptionMenu(
-            self.frame_destino_combo, 
-            values=valores_destino,
-            variable=self.combo_destino_var,
-            command=self.ao_alterar_destino_combo,
-            width=400,
-            height=28
-        )
-        self.combo_destino.pack(side="left", padx=(0, 10), fill="x", expand=True)
-        
-        self.btn_destino = ctk.CTkButton(
-            self.frame_destino_combo, 
-            text="Procurar...", 
-            width=110, 
-            height=28, 
-            command=self.selecionar_destino
-        )
-        self.btn_destino.pack(side="left")
-
-        # Exibe o caminho completo selecionado (somente leitura)
-        self.entry_destino = ctk.CTkEntry(
-            self, 
-            textvariable=self.destino_path, 
-            width=520, 
-            height=28, 
-            state="readonly"
-        )
-        self.entry_destino.pack(pady=(2, 4), padx=40, fill="x")
-
-
-
-        self.criar_pasta_fotografo_var = ctk.BooleanVar(value=True)
-        self.chk_criar_pasta_fotografo = ctk.CTkCheckBox(self, text="Criar subpasta local com o nome do fotógrafo", variable=self.criar_pasta_fotografo_var)
-        self.chk_criar_pasta_fotografo.pack(anchor="w", padx=40, pady=(0, 4))
-
-        self.lbl_progresso = ctk.CTkLabel(self, text="Progresso: 0%")
-        self.lbl_progresso.pack(anchor="w", padx=40)
-        self.progressbar = ctk.CTkProgressBar(self, width=520, height=8)
-        self.progressbar.pack(pady=(1, 6), padx=40, fill="x")
-        self.progressbar.set(0)
-
-        # Botão principal de transferência
-        self.frame_botoes = ctk.CTkFrame(self, fg_color="transparent")
-        self.frame_botoes.pack(pady=(2, 1), padx=40, fill="x")
-
-        self.btn_iniciar = ctk.CTkButton(
-            self.frame_botoes, 
-            text="Iniciar Transferência", 
-            font=ctk.CTkFont(size=13, weight="bold"), 
-            height=36, 
-            fg_color="green", 
-            hover_color="darkgreen", 
-            command=self.iniciar_transferencia
-        )
-        self.btn_iniciar.pack(fill="x", expand=True)
-
-        # Botões secundários posicionados lado a lado abaixo da transferência
-        self.frame_botoes_secundarios = ctk.CTkFrame(self, fg_color="transparent")
-        self.frame_botoes_secundarios.pack(pady=(1, 4), padx=40, fill="x")
-
-        self.btn_selecionar = ctk.CTkButton(
-            self.frame_botoes_secundarios, 
-            text="🔍 Selecionar / Revisar Fotos", 
-            height=36, 
-            font=ctk.CTkFont(size=12, weight="bold"), 
-            fg_color="#1f538d", 
-            hover_color="#14375e", 
-            command=self.abrir_revisor, 
-            state="disabled"
-        )
-        self.btn_selecionar.pack(side="left", fill="x", expand=True, padx=(0, 10))
-
-        self.btn_abrir = ctk.CTkButton(
-            self.frame_botoes_secundarios, 
-            text="📁 Abrir Pasta", 
-            height=36, 
-            font=ctk.CTkFont(size=12), 
-            command=self.abrir_pasta, 
-            state="disabled"
-        )
-        self.btn_abrir.pack(side="right", fill="x", expand=True)
-
-        # Campo para Pasta de Destino no Google Drive (Dropbox)
-        self.lbl_drive_link = ctk.CTkLabel(self, text="Pasta de Destino no Google Drive:")
-        self.lbl_drive_link.pack(anchor="w", padx=40, pady=(2, 1))
-        
-        # Carrega os valores para o OptionMenu
-        valores_menu = ["Raiz do Google Drive (Padrão)"]
-        for p in self.pastas_drive:
-            valores_menu.append(p['nome'])
-            
-        self.combo_drive_var = ctk.StringVar(value=valores_menu[0])
-        self.combo_drive = ctk.CTkOptionMenu(
-            self, 
-            values=valores_menu,
-            variable=self.combo_drive_var,
-            width=520,
-            height=28
-        )
-        self.combo_drive.pack(pady=(0, 4), padx=40, fill="x")
-
-        # Botão para enviar as fotos selecionadas para o Google Drive
-        self.btn_enviar_drive = ctk.CTkButton(
-            self, 
-            text="📤 Enviar Fotos Selecionadas para o Google Drive", 
-            height=36, 
-            font=ctk.CTkFont(size=12, weight="bold"), 
-            fg_color="#4285F4", 
-            hover_color="#357ae8", 
-            command=self.iniciar_upload_drive, 
-            state="disabled"
-        )
-        self.btn_enviar_drive.pack(pady=(2, 10), padx=40, fill="x")
+        self.atualizar_caminho_final_exibicao()
 
     def monitorar_cartao(self):
-        # Mapeia device -> mountpoint para os drives inicialmente montados
         drives_iniciais = {p.device: p.mountpoint for p in psutil.disk_partitions() if p.mountpoint}
         while True:
             time.sleep(1.5)
@@ -1477,15 +2500,10 @@ class ImportadorFotosApp(ctk.CTk):
                 self.cartao_detectado = True
                 self.origem_manual = False
                 
-                # Atualiza a UI de forma segura na thread principal
                 self.after(0, lambda path=self.drive_path: self.atualizar_ui_cartao_detectado(path))
-                
-                # Abre a pasta DCIM (ou raiz) do cartão no gerenciador de arquivos do sistema
                 self.abrir_pasta_dcim(self.drive_path)
-                
                 drives_iniciais = drives_atuais
             elif len(drives_atuais) < len(drives_iniciais):
-                # Se o usuário escolheu uma origem manual, ignoramos a remoção de outros drives
                 if self.origem_manual:
                     drives_iniciais = drives_atuais
                 else:
@@ -1529,7 +2547,6 @@ class ImportadorFotosApp(ctk.CTk):
         try:
             pastas_encontradas = []
             
-            # Opção de importar a pasta raiz inteira de forma direta
             var_raiz = ctk.StringVar(value="")
             cb_raiz = ctk.CTkCheckBox(
                 self.frame_pastas, 
@@ -1570,68 +2587,70 @@ class ImportadorFotosApp(ctk.CTk):
             widget.destroy()
         self.checkboxes_pastas.clear()
         self.lbl_vazio = ctk.CTkLabel(self.frame_pastas, text="Nenhum cartão detectado.")
-        self.lbl_vazio.pack(pady=40)
+        self.lbl_vazio.pack(pady=15)
 
     def selecionar_destino(self):
         pasta = filedialog.askdirectory(title="Selecione onde salvar as fotos")
         if pasta:
             self.destino_path.set(pasta)
-            self.combo_destino_var.set("Escolher pasta personalizada...")
-        else:
-            if not self.destino_path.get():
+            if hasattr(self, 'combo_destino_var'):
                 self.combo_destino_var.set("Escolher pasta personalizada...")
+        else:
+            if not self.destino_path.get() or self.destino_path.get() == self.destino_padrao_app:
+                if hasattr(self, 'combo_destino_var'):
+                    self.combo_destino_var.set("Pasta do Aplicativo (Padrão)")
+                self.destino_path.set(self.destino_padrao_app)
             else:
                 encontrou = False
                 for p in self.pastas_local:
                     if p['caminho'] == self.destino_path.get():
-                        self.combo_destino_var.set(p['nome'])
+                        if hasattr(self, 'combo_destino_var'):
+                            self.combo_destino_var.set(p['nome'])
                         encontrou = True
                         break
                 if not encontrou:
-                    self.combo_destino_var.set("Escolher pasta personalizada...")
+                    if hasattr(self, 'combo_destino_var'):
+                        self.combo_destino_var.set("Escolher pasta personalizada...")
+        self.atualizar_caminho_final_exibicao()
 
     def novo_descarregamento(self):
-        # Limpa o nome do fotógrafo
-        self.entry_nome.delete(0, 'end')
-        
-        # Reseta a pasta do Drive para a padrão (Raiz)
-        self.combo_drive_var.set("Raiz do Google Drive (Padrão)")
-        
-        # Reseta os arquivos transferidos
+        if hasattr(self, 'combo_fotografo_var'):
+            if self.active_servir and self.active_servir.get('voluntarios'):
+                self.combo_fotografo_var.set(self.active_servir['voluntarios'][0])
+            if hasattr(self, 'entry_nome_outro'):
+                self.entry_nome_outro.delete(0, 'end')
+                self.entry_nome_outro.pack_forget()
+        if hasattr(self, 'entry_nome'):
+            self.entry_nome.delete(0, 'end')
+            
         self.arquivos_transferidos.clear()
         
-        # Reseta o progresso
         self.progressbar.set(0)
         self.lbl_progresso.configure(text="Progresso: 0%")
         
-        # Desabilita botões secundários
         self.btn_selecionar.configure(state="disabled")
         self.btn_abrir.configure(state="disabled")
         self.btn_enviar_drive.configure(state="disabled")
         self.btn_iniciar.configure(state="normal")
         
-        # Reseta a pasta do Computador para a primeira predefinida ou personalizada
-        if self.pastas_local:
-            self.combo_destino_var.set(self.pastas_local[0]['nome'])
-            self.destino_path.set(self.pastas_local[0]['caminho'])
-        else:
-            self.combo_destino_var.set("Escolher pasta personalizada...")
-            self.destino_path.set("")
-            
-        # Reseta e recarrega os cartões/pastas de origem
+        self.recarregar_combo_drive()
+        self.recarregar_combo_destino()
+        
         if self.cartao_detectado and self.drive_path:
             self.atualizar_ui_cartao_detectado(self.drive_path, e_manual=self.origem_manual)
         else:
             self.atualizar_ui_cartao_removido()
+            
+        self.atualizar_caminho_final_exibicao()
 
     def iniciar_transferencia(self):
         if not self.cartao_detectado:
             messagebox.showwarning("Aviso", "Nenhum cartão SD detectado!")
             return
             
-        nome_fotografo = self.entry_nome.get().strip()
+        nome_fotografo = self.obter_nome_fotografo_ativo()
         if not nome_fotografo:
-            messagebox.showwarning("Aviso", "Por favor, digite o nome do fotógrafo!")
+            messagebox.showwarning("Aviso", "Por favor, selecione ou digite o nome do fotógrafo!")
             return
             
         destino = self.destino_path.get()
@@ -1647,24 +2666,37 @@ class ImportadorFotosApp(ctk.CTk):
         self.btn_iniciar.configure(state="disabled")
         self.btn_selecionar.configure(state="disabled")
         self.btn_abrir.configure(state="disabled")
-        self.combo_destino.configure(state="disabled")
-        self.btn_destino.configure(state="disabled")
+        if hasattr(self, 'combo_destino') and self.combo_destino.winfo_exists():
+            self.combo_destino.configure(state="disabled")
+        if hasattr(self, 'combo_fotografo'):
+            self.combo_fotografo.configure(state="disabled")
+        if hasattr(self, 'entry_nome_outro'):
+            self.entry_nome_outro.configure(state="disabled")
+        if hasattr(self, 'combo_categoria'):
+            self.combo_categoria.configure(state="disabled")
         
-        criar_pasta_fotografo = self.criar_pasta_fotografo_var.get()
-        
-        # Limpa os arquivos transferidos antes de uma nova importação
         self.arquivos_transferidos.clear()
         
         thread_copia = threading.Thread(
             target=self.processar_copia, 
-            args=(nome_fotografo, destino, pastas_selecionadas, criar_pasta_fotografo)
+            args=(nome_fotografo, destino, pastas_selecionadas)
         )
         thread_copia.start()
 
-    def processar_copia(self, nome_fotografo, destino, pastas_selecionadas, criar_pasta_fotografo):
-        if criar_pasta_fotografo:
-            destino = os.path.join(destino, nome_fotografo)
-            
+    def processar_copia(self, nome_fotografo, destino, pastas_selecionadas):
+
+
+        # Calcula o caminho final completo da pasta onde as fotos serão salvas usando o helper
+        destino = self.calcular_caminho_final(destino, nome_fotografo)
+        
+        # Identifica a pasta principal do fotógrafo (destino_base_fotografo)
+        destino_base_fotografo = destino
+        nome_dir = os.path.basename(destino)
+        if nome_dir.startswith(f"{nome_fotografo}_"):
+            parte_sufixo = nome_dir[len(nome_fotografo)+1:]
+            if parte_sufixo.isdigit():
+                destino_base_fotografo = os.path.dirname(destino)
+                
         os.makedirs(destino, exist_ok=True)
         arquivos_para_copiar = []
         
@@ -1682,7 +2714,6 @@ class ImportadorFotosApp(ctk.CTk):
             self.after(0, lambda: self.btn_iniciar.configure(state="normal"))
             return
 
-        # Verifica se há fotos em formato RAW nas pastas selecionadas
         tem_raw = any(f.lower().endswith(('.cr2', '.nef', '.arw', '.cr3')) for f in arquivos_para_copiar)
         if tem_raw:
             confirmar = [True]
@@ -1703,36 +2734,39 @@ class ImportadorFotosApp(ctk.CTk):
             if not confirmar[0]:
                 def reativar_controles():
                     self.btn_iniciar.configure(state="normal")
-                    self.combo_destino.configure(state="normal")
-                    self.btn_destino.configure(state="normal")
+                    if hasattr(self, 'combo_destino') and self.combo_destino.winfo_exists():
+                        self.combo_destino.configure(state="normal")
+                    if hasattr(self, 'combo_fotografo'):
+                        self.combo_fotografo.configure(state="normal")
+                    if hasattr(self, 'entry_nome_outro'):
+                        self.entry_nome_outro.configure(state="normal")
+                    if hasattr(self, 'combo_categoria'):
+                        self.combo_categoria.configure(state="normal")
                     if self.arquivos_transferidos:
                         self.btn_selecionar.configure(state="normal")
                         self.btn_abrir.configure(state="normal")
                 self.after(0, reativar_controles)
                 return
 
-        # Ordena os arquivos por data de modificação para garantir ordem cronológica na renomeação sequencial
         try:
             arquivos_para_copiar.sort(key=lambda x: os.path.getmtime(x))
         except Exception:
             arquivos_para_copiar.sort()
 
-        # Determina o formato dos dígitos baseado no total de arquivos a transferir (mínimo de 3 dígitos)
         digitos = max(3, len(str(total_arquivos)))
 
-        # Encontra o próximo número sequencial disponível no destino para este fotógrafo
         contador_inicio = 1
         try:
-            arquivos_destino = os.listdir(destino)
             prefixo = f"{nome_fotografo}_"
             numeros_existentes = []
-            for f in arquivos_destino:
-                if f.startswith(prefixo):
-                    parte_sem_prefixo = f[len(prefixo):]
-                    nome_sem_ext_dest, _ = os.path.splitext(parte_sem_prefixo)
-                    parte_numerica = nome_sem_ext_dest.split('_')[0]
-                    if parte_numerica.isdigit():
-                        numeros_existentes.append(int(parte_numerica))
+            for root, dirs, files in os.walk(destino_base_fotografo):
+                for f in files:
+                    if f.startswith(prefixo):
+                        partes_nome = f[len(prefixo):]
+                        nome_sem_ext_dest, _ = os.path.splitext(partes_nome)
+                        parte_numerica = nome_sem_ext_dest.split('_')[0]
+                        if parte_numerica.isdigit():
+                            numeros_existentes.append(int(parte_numerica))
             if numeros_existentes:
                 contador_inicio = max(numeros_existentes) + 1
         except Exception as e:
@@ -1759,12 +2793,8 @@ class ImportadorFotosApp(ctk.CTk):
                 contador += 1
 
             try:    
-                # Cópia direta do arquivo original (RAW, PNG, JPG, MP4, etc.)
                 shutil.copy2(caminho_arquivo, caminho_destino)
-                
-                # Armazena os arquivos transferidos com sucesso de forma thread-safe
                 with lock:
-                    # Só adicionamos imagens legíveis (ignoramos vídeos no revisor se houver)
                     if caminho_destino.lower().endswith(('.png', '.jpg', '.jpeg', '.cr2', '.nef', '.arw', '.cr3')):
                         self.arquivos_transferidos.append(caminho_destino)
             except Exception as e:
@@ -1780,14 +2810,19 @@ class ImportadorFotosApp(ctk.CTk):
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
             executor.map(processar_arquivo, enumerate(arquivos_para_copiar))
 
-        # Chama a finalização da transferência de forma segura na thread principal
         self.after(0, self.finalizar_transferencia_gui)
 
     def finalizar_transferencia_gui(self):
         self.btn_iniciar.configure(state="normal")
         self.btn_abrir.configure(state="normal")
-        self.combo_destino.configure(state="normal")
-        self.btn_destino.configure(state="normal")
+        if hasattr(self, 'combo_destino') and self.combo_destino.winfo_exists():
+            self.combo_destino.configure(state="normal")
+        if hasattr(self, 'combo_fotografo'):
+            self.combo_fotografo.configure(state="normal")
+        if hasattr(self, 'entry_nome_outro'):
+            self.entry_nome_outro.configure(state="normal")
+        if hasattr(self, 'combo_categoria'):
+            self.combo_categoria.configure(state="normal")
         self.progressbar.set(0)
         self.lbl_progresso.configure(text="Progresso: 0%")
         
@@ -1795,11 +2830,8 @@ class ImportadorFotosApp(ctk.CTk):
         if total_fotos > 0:
             self.registrar_historico()
             self.btn_selecionar.configure(state="normal")
-            
-            # Garantimos que o botão do Drive comece desabilitado caso o usuário queira revisar as fotos primeiro
             self.btn_enviar_drive.configure(state="disabled")
             
-            # Pergunta se o usuário gostaria de abrir o painel de seleção diretamente
             revisar = messagebox.askyesno(
                 "Transferência Finalizada",
                 f"Foram transferidas {total_fotos} foto(s) com sucesso!\n\n"
@@ -1808,7 +2840,6 @@ class ImportadorFotosApp(ctk.CTk):
             if revisar:
                 self.abrir_revisor()
             else:
-                # Se ele escolheu NÃO revisar, pode subir tudo imediatamente
                 self.btn_enviar_drive.configure(state="normal")
         else:
             self.btn_enviar_drive.configure(state="disabled")
@@ -1821,26 +2852,181 @@ class ImportadorFotosApp(ctk.CTk):
             
         self.btn_selecionar.configure(state="disabled")
         self.btn_abrir.configure(state="disabled")
-        self.btn_enviar_drive.configure(state="disabled") # Desabilita o Drive durante a revisão
+        self.btn_enviar_drive.configure(state="disabled")
         
-        # Abre a tela de revisão
-        self.janela_revisao = RevisorFotosWindow(self, self.arquivos_transferidos, self.destino_path.get())
+        if self.active_servir:
+            base_destino = self.destino_path.get()
+            nome_servir = self.active_servir.get('nome')
+            nome_fotografo = self.obter_nome_fotografo_ativo()
+            categoria = self.combo_categoria_var.get()
+            if categoria == "Raiz (Nenhuma)":
+                destino_final = os.path.join(base_destino, nome_servir, nome_fotografo)
+            else:
+                destino_final = os.path.join(base_destino, nome_servir, categoria, nome_fotografo)
+        else:
+            destino_final = self.destino_path.get()
+            if self.criar_pasta_fotografo_var.get():
+                destino_final = os.path.join(destino_final, self.obter_nome_fotografo_ativo())
+                
+        self.janela_revisao = RevisorFotosWindow(self, self.arquivos_transferidos, destino_final)
 
     def abrir_pasta(self):
         destino = self.destino_path.get()
-        nome_fotografo = self.entry_nome.get().strip()
-        if nome_fotografo and self.criar_pasta_fotografo_var.get():
-            destino_sub = os.path.join(destino, nome_fotografo)
-            if os.path.exists(destino_sub):
-                destino = destino_sub
-                
-        if destino and os.path.exists(destino):
-            if platform.system() == "Windows":
-                os.startfile(destino)
-            elif platform.system() == "Darwin":
-                subprocess.Popen(["open", destino])
+        nome_fotografo = self.obter_nome_fotografo_ativo()
+        
+        if self.active_servir:
+            nome_servir = self.active_servir.get('nome')
+            categoria = self.combo_categoria_var.get()
+            if categoria == "Raiz (Nenhuma)":
+                destino_final = os.path.join(destino, nome_servir, nome_fotografo)
             else:
-                subprocess.Popen(["xdg-open", destino])
+                destino_final = os.path.join(destino, nome_servir, categoria, nome_fotografo)
+            if os.path.exists(destino_final):
+                destino = destino_final
+            elif os.path.exists(os.path.join(destino, nome_servir, categoria)):
+                destino = os.path.join(destino, nome_servir, categoria)
+            elif os.path.exists(os.path.join(destino, nome_servir)):
+                destino = os.path.join(destino, nome_servir)
+        else:
+            if nome_fotografo and self.criar_pasta_fotografo_var.get():
+                destino_sub = os.path.join(destino, nome_fotografo)
+                if os.path.exists(destino_sub):
+                    destino = destino_sub
+                    
+        if destino and os.path.exists(destino):
+            try:
+                if platform.system() == "Windows":
+                    os.startfile(destino)
+                elif platform.system() == "Darwin":
+                    subprocess.Popen(["open", destino])
+                else:
+                    subprocess.Popen(["xdg-open", destino])
+            except Exception as e:
+                print(f"Erro ao abrir pasta: {e}")
+
+    def abrir_pasta_raiz_servir(self):
+        if not self.active_servir:
+            return
+        destino_base = self.destino_path.get()
+        if not destino_base:
+            return
+        nome_servir = self.active_servir.get('nome')
+        pasta_raiz = os.path.join(destino_base, nome_servir)
+        if os.path.exists(pasta_raiz):
+            try:
+                if platform.system() == "Windows":
+                    os.startfile(pasta_raiz)
+                elif platform.system() == "Darwin":
+                    subprocess.Popen(["open", pasta_raiz])
+                else:
+                    subprocess.Popen(["xdg-open", pasta_raiz])
+            except Exception as e:
+                print(f"Erro ao abrir pasta raiz: {e}")
+        else:
+            messagebox.showinfo("Informação", f"A pasta raiz do servir '{nome_servir}' ainda não foi criada localmente.")
+
+    def finalizar_servir_thread(self):
+        if not self.active_servir:
+            messagebox.showwarning("Aviso", "Nenhum dia de Servir ativo para finalizar.")
+            return
+            
+        confirmar = messagebox.askyesno(
+            "Finalizar Servir", 
+            "Tem certeza que deseja finalizar este Servir e enviar todos os dados para o webhook?"
+        )
+        if not confirmar:
+            return
+            
+        # Desabilita o botão para evitar múltiplos cliques
+        if hasattr(self, 'btn_finalizar_servir') and self.btn_finalizar_servir.winfo_exists():
+            self.btn_finalizar_servir.configure(state="disabled", text="Enviando...")
+            
+        # Inicia a thread
+        threading.Thread(target=self.executar_finalizar_servir, daemon=True).start()
+
+    def executar_finalizar_servir(self):
+        try:
+            import requests
+            nome_servir = self.active_servir.get('nome')
+            destino_base = self.destino_path.get()
+            
+            # 1. Monta o payload inicial do Servir
+            payload = {
+                "servir": {
+                    "id": self.active_servir.get("id"),
+                    "nome": nome_servir,
+                    "data_criacao": self.active_servir.get("data_criacao"),
+                    "drive_link": self.active_servir.get("drive_link"),
+                    "drive_nome": self.active_servir.get("drive_nome"),
+                    "voluntarios": self.active_servir.get("voluntarios", []),
+                    "pastas_predefinidas": self.active_servir.get("pastas_predefinidas", [])
+                },
+                "categorias": []
+            }
+            
+            # 2. Mapeia a estrutura real de arquivos no disco
+            pasta_raiz_servir = os.path.join(destino_base, nome_servir)
+            
+            if os.path.exists(pasta_raiz_servir):
+                # Percorre as categorias que estão cadastradas ou que existem no disco
+                categorias_detectadas = {}
+                
+                # Lista todas as subpastas da raiz (as categorias)
+                for item in os.listdir(pasta_raiz_servir):
+                    caminho_item = os.path.join(pasta_raiz_servir, item)
+                    if os.path.isdir(caminho_item):
+                        categoria_nome = item
+                        categorias_detectadas[categoria_nome] = []
+                        
+                        # Dentro da categoria, lista as pastas de fotógrafos
+                        for subitem in os.listdir(caminho_item):
+                            caminho_subitem = os.path.join(caminho_item, subitem)
+                            if os.path.isdir(caminho_subitem):
+                                fotografo_dir_nome = subitem
+                                
+                                # Conta os arquivos/fotos do fotógrafo
+                                total_fotos = 0
+                                for root, _, files in os.walk(caminho_subitem):
+                                    for file_name in files:
+                                        if file_name.lower().endswith(('.png', '.jpg', '.jpeg', '.cr2', '.nef', '.arw', '.cr3', '.mp4')):
+                                            total_fotos += 1
+                                
+                                categorias_detectadas[categoria_nome].append({
+                                    "nome_fotografo": fotografo_dir_nome,
+                                    "total_fotos": total_fotos
+                                })
+                
+                # Formata as categorias para a lista no payload
+                for cat_nome, fotogs in categorias_detectadas.items():
+                    payload["categorias"].append({
+                        "nome": cat_nome,
+                        "fotografos": fotogs
+                    })
+            
+            # 3. Envia o payload via POST para o webhook
+            url_webhook = "https://sistema-crescer-n8n.vuvd0x.easypanel.host/webhook/finalizar-servir"
+            headers = {"Content-Type": "application/json"}
+            
+            resposta = requests.post(url_webhook, json=payload, headers=headers, timeout=30)
+            
+            # 4. Trata a resposta
+            if resposta.status_code in [200, 201]:
+                self.after(0, lambda: self.finalizar_servir_sucesso())
+            else:
+                self.after(0, lambda r=resposta: self.finalizar_servir_erro(f"Código de status: {r.status_code}"))
+                
+        except Exception as e:
+            self.after(0, lambda err=e: self.finalizar_servir_erro(str(err)))
+
+    def finalizar_servir_sucesso(self):
+        if hasattr(self, 'btn_finalizar_servir') and self.btn_finalizar_servir.winfo_exists():
+            self.btn_finalizar_servir.configure(state="normal", text="🏁 Finalizar Servir")
+        messagebox.showinfo("Sucesso", "Servir finalizado com sucesso! Todos os dados foram enviados para o webhook.")
+        
+    def finalizar_servir_erro(self, erro_msg):
+        if hasattr(self, 'btn_finalizar_servir') and self.btn_finalizar_servir.winfo_exists():
+            self.btn_finalizar_servir.configure(state="normal", text="🏁 Finalizar Servir")
+        messagebox.showerror("Erro ao Finalizar", f"Não foi possível enviar os dados ao webhook:\n{erro_msg}")
 
     def extrair_id_pasta_drive(self, link_ou_id):
         link_ou_id = link_ou_id.strip()
@@ -1849,7 +3035,6 @@ class ImportadorFotosApp(ctk.CTk):
         if "drive.google.com" in link_ou_id:
             partes = link_ou_id.split("/folders/")
             if len(partes) > 1:
-                # Pega a parte após "/folders/" e divide por "?" ou "/" para isolar o ID puro
                 subparte = partes[1].split("?")[0].split("/")[0]
                 return subparte
         return link_ou_id
@@ -1872,24 +3057,27 @@ class ImportadorFotosApp(ctk.CTk):
             messagebox.showerror(
                 "Credenciais Não Encontradas", 
                 "O arquivo 'credentials.json' não foi encontrado na pasta do aplicativo!\n\n"
-                "Por favor, siga o guia 'google_drive_credentials_guide.md' para gerar "
-                "suas credenciais e salve o arquivo como 'credentials.json' na pasta do programa."
+                "Por favor, salve o arquivo como 'credentials.json' na pasta do programa."
             )
             return
 
-        # Desabilita botões para evitar ações concorrentes durante o upload
         self.btn_iniciar.configure(state="disabled")
         self.btn_selecionar.configure(state="disabled")
         self.btn_abrir.configure(state="disabled")
         self.btn_enviar_drive.configure(state="disabled")
         self.btn_manual.configure(state="disabled")
         self.combo_drive.configure(state="disabled")
-        self.combo_destino.configure(state="disabled")
-        self.btn_destino.configure(state="disabled")
+        if hasattr(self, 'combo_destino') and self.combo_destino.winfo_exists():
+            self.combo_destino.configure(state="disabled")
+        if hasattr(self, 'combo_fotografo'):
+            self.combo_fotografo.configure(state="disabled")
+        if hasattr(self, 'entry_nome_outro'):
+            self.entry_nome_outro.configure(state="disabled")
+        if hasattr(self, 'combo_categoria'):
+            self.combo_categoria.configure(state="disabled")
 
         link_pasta = self.obter_link_drive_selecionado()
 
-        # Inicia a thread de upload em segundo plano para não travar a UI
         thread_upload = threading.Thread(
             target=self.processar_upload_drive, 
             args=(caminho_credenciais, link_pasta), 
@@ -1902,7 +3090,6 @@ class ImportadorFotosApp(ctk.CTk):
         token_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'token.json')
         creds = None
         
-        # Carrega o token.json se existir e for válido
         if os.path.exists(token_path):
             try:
                 creds = Credentials.from_authorized_user_file(token_path, SCOPES)
@@ -1910,7 +3097,6 @@ class ImportadorFotosApp(ctk.CTk):
                 print(f"Erro ao carregar token.json: {e}")
                 creds = None
 
-        # Se não houver credenciais válidas, realiza o login
         if not creds or not creds.valid:
             if creds and creds.expired and creds.refresh_token:
                 try:
@@ -1920,19 +3106,15 @@ class ImportadorFotosApp(ctk.CTk):
                     creds = None
             
             if not creds:
-                # UX: Avisa o usuário que abrirá o navegador antes que a janela surja
                 self.after(0, lambda: messagebox.showinfo(
                     "Autenticação do Google", 
-                    "Uma janela do seu navegador de internet será aberta para que você faça login com sua conta do Google "
-                    "e conceda acesso para o aplicativo enviar as fotos.\n\n"
-                    "Por favor, confirme a autorização no seu navegador."
+                    "Uma janela do seu navegador será aberta para login com sua conta do Google.\n\n"
+                    "Por favor, confirme a autorização."
                 ))
                 try:
                     self.after(0, lambda: self.lbl_progresso.configure(text="Aguardando autorização no navegador..."))
                     flow = InstalledAppFlow.from_client_secrets_file(caminho_credenciais, SCOPES)
                     creds = flow.run_local_server(port=0)
-                    
-                    # Salva as credenciais para evitar logins futuros
                     with open(token_path, 'w') as token_file:
                         token_file.write(creds.to_json())
                 except Exception as e:
@@ -1944,7 +3126,6 @@ class ImportadorFotosApp(ctk.CTk):
             self.after(0, lambda: self.lbl_progresso.configure(text="Conectando ao Google Drive..."))
             service = build('drive', 'v3', credentials=creds)
 
-            # Resolve a pasta de destino
             folder_id = self.extrair_id_pasta_drive(link_pasta)
             nome_destino_exibicao = "a raiz do seu Google Drive"
             
@@ -1964,10 +3145,49 @@ class ImportadorFotosApp(ctk.CTk):
                     self.after(0, lambda: messagebox.showerror(
                         "Pasta Não Encontrada", 
                         "Não foi possível acessar a pasta fornecida no Google Drive.\n\n"
-                        "Verifique se o link está correto, se a pasta não foi excluída e se você possui permissões de gravação nela."
+                        "Verifique se o link está correto, se a pasta existe e se possui permissões."
                     ))
                     self.after(0, self.finalizar_upload_gui)
                     return
+
+            # Se tivermos um Servir ativo, criamos a estrutura de subpastas no Google Drive
+            if self.active_servir and folder_id != 'root':
+                self.after(0, lambda: self.lbl_progresso.configure(text="Criando estrutura de pastas no Drive..."))
+                nome_fotografo = self.obter_nome_fotografo_ativo()
+                categoria_selecionada = self.combo_categoria_var.get()
+                
+                # Detecta se há subpasta local como Fotografo_2, Fotografo_3
+                subpasta_nome = None
+                if self.arquivos_transferidos:
+                    pai_local = os.path.basename(os.path.dirname(self.arquivos_transferidos[0]))
+                    if pai_local and pai_local != nome_fotografo:
+                        subpasta_nome = pai_local
+                
+                if categoria_selecionada and categoria_selecionada != "Raiz (Nenhuma)":
+                    id_pasta_cat = self.obter_ou_criar_pasta_drive(service, categoria_selecionada, folder_id)
+                    if id_pasta_cat:
+                        folder_id = id_pasta_cat
+                        nome_destino_exibicao += f" -> '{categoria_selecionada}'"
+                        
+                        id_pasta_fotografo = self.obter_ou_criar_pasta_drive(service, nome_fotografo, folder_id)
+                        if id_pasta_fotografo:
+                            folder_id = id_pasta_fotografo
+                            nome_destino_exibicao += f" -> '{nome_fotografo}'"
+                            if subpasta_nome:
+                                id_sub = self.obter_ou_criar_pasta_drive(service, subpasta_nome, folder_id)
+                                if id_sub:
+                                    folder_id = id_sub
+                                    nome_destino_exibicao += f" -> '{subpasta_nome}'"
+                else:
+                    id_pasta_fotografo = self.obter_ou_criar_pasta_drive(service, nome_fotografo, folder_id)
+                    if id_pasta_fotografo:
+                        folder_id = id_pasta_fotografo
+                        nome_destino_exibicao += f" -> '{nome_fotografo}'"
+                        if subpasta_nome:
+                            id_sub = self.obter_ou_criar_pasta_drive(service, subpasta_nome, folder_id)
+                            if id_sub:
+                                folder_id = id_sub
+                                nome_destino_exibicao += f" -> '{subpasta_nome}'"
 
             arquivos_para_enviar = self.arquivos_transferidos.copy()
             total_arquivos = len(arquivos_para_enviar)
@@ -1984,8 +3204,6 @@ class ImportadorFotosApp(ctk.CTk):
                     return
 
                 nome_arquivo = os.path.basename(caminho_arquivo)
-                
-                # Cada thread cria seu próprio client HTTP/service para ser 100% thread-safe
                 service_thread = build('drive', 'v3', credentials=creds)
 
                 file_metadata = {
@@ -2024,7 +3242,7 @@ class ImportadorFotosApp(ctk.CTk):
                         text=f"Enviando ({p}/{t}) fotos para o Drive..."
                     ))
 
-            self.after(0, lambda: self.lbl_progresso.configure(text=f"Iniciando envio de {total_arquivos} fotos (2 em paralelo)..."))
+            self.after(0, lambda: self.lbl_progresso.configure(text=f"Iniciando envio de {total_arquivos} fotos..."))
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
                 executor.map(enviar_um_arquivo, arquivos_para_enviar)
@@ -2046,8 +3264,14 @@ class ImportadorFotosApp(ctk.CTk):
         self.btn_enviar_drive.configure(state="normal")
         self.btn_manual.configure(state="normal")
         self.combo_drive.configure(state="normal")
-        self.combo_destino.configure(state="normal")
-        self.btn_destino.configure(state="normal")
+        if hasattr(self, 'combo_destino') and self.combo_destino.winfo_exists():
+            self.combo_destino.configure(state="normal")
+        if hasattr(self, 'combo_fotografo'):
+            self.combo_fotografo.configure(state="normal")
+        if hasattr(self, 'entry_nome_outro'):
+            self.entry_nome_outro.configure(state="normal")
+        if hasattr(self, 'combo_categoria'):
+            self.combo_categoria.configure(state="normal")
         self.progressbar.set(0)
         self.lbl_progresso.configure(text="Progresso: 0%")
 
