@@ -481,6 +481,1008 @@ class RevisorFotosWindow(ctk.CTkToplevel):
             self.destroy()
 
 
+class SeletorArquivosWindow(ctk.CTkToplevel):
+    def __init__(self, parent, drive_path, selecionados_iniciais=None):
+        super().__init__(parent)
+        self.parent = parent
+        self.drive_path_raiz = drive_path
+        self.caminho_atual = drive_path
+        
+        self.title("Gerenciador e Seletor de Fotos do Cartão")
+        self.geometry("1100x750")
+        self.minsize(900, 600)
+        
+        # Garante foco e captura de eventos
+        self.focus_force()
+        self.after(100, lambda: self.grab_set() if self.winfo_exists() else None)
+        self.after(200, self.focus_force)
+        
+        # Maximiza a janela
+        self.after(150, self.maximizar_janela)
+        
+        # Conjunto de caminhos de arquivos selecionados (strings de caminhos absolutos)
+        self.selecionados_set = set(selecionados_iniciais) if selecionados_iniciais else set()
+        self.itens_limite = 80
+        
+        self.modo_recursivo = False
+        self.modo_exibicao = "grid" # "grid" ou "list"
+        self.ordenacao = "date_desc" # "date_desc", "date_asc", "name_asc", "size_desc"
+        
+        # Cache de imagens de miniaturas: caminho -> PIL.Image
+        self.cache_thumbnails = {}
+        self.lock_cache = threading.Lock()
+        self.loading_queue = []
+        self.lock_queue = threading.Lock()
+        
+        self.ultimo_clicado = None # índice na lista filtrada ativa
+        self.card_widgets = {} # caminho -> dict de referências
+        
+        # Variáveis reativas do Tkinter
+        self.var_busca = ctk.StringVar()
+        self.var_busca.trace_add("write", lambda *args: self.ao_alterar_busca())
+        
+        self.setup_ui()
+        self.carregar_e_renderizar()
+        
+        # Inicia a thread de carregamento de miniaturas
+        self.loop_active = True
+        self.loading_thread = threading.Thread(target=self.thumbnail_loader_loop, daemon=True)
+        self.loading_thread.start()
+        
+        # Monitora redimensionamento para rearranjar a grade
+        self.scroll_container.bind("<Configure>", self.ao_redimensionar)
+        
+        self.protocol("WM_DELETE_WINDOW", self.ao_fechar_janela)
+
+    def maximizar_janela(self):
+        try:
+            if platform.system() == "Windows":
+                self.state("zoomed")
+            else:
+                self.attributes("-zoomed", True)
+        except Exception:
+            pass
+
+    def setup_ui(self):
+        self.grid_rowconfigure(0, weight=0) # Barra de ferramentas
+        self.grid_rowconfigure(1, weight=1) # Área de arquivos
+        self.grid_rowconfigure(2, weight=0) # Barra de status e botões
+        self.grid_columnconfigure(0, weight=1)
+        
+        # --- BARRA DE FERRAMENTAS ---
+        self.frame_toolbar = ctk.CTkFrame(self, fg_color="#1e1e1e", corner_radius=0)
+        self.frame_toolbar.grid(row=0, column=0, sticky="ew", padx=15, pady=(15, 5))
+        
+        # Linha 1 da Toolbar: Navegação de Pastas
+        self.frame_nav = ctk.CTkFrame(self.frame_toolbar, fg_color="transparent")
+        self.frame_nav.pack(fill="x", padx=10, pady=5)
+        
+        self.btn_subir = ctk.CTkButton(
+            self.frame_nav, 
+            text="⬆️ Subir Pasta", 
+            width=100, 
+            height=28,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            command=self.subir_pasta
+        )
+        self.btn_subir.pack(side="left", padx=(0, 5))
+        
+        self.btn_raiz = ctk.CTkButton(
+            self.frame_nav, 
+            text="🏠 Raiz do Cartão", 
+            width=110, 
+            height=28,
+            fg_color="#34495e",
+            hover_color="#2c3e50",
+            font=ctk.CTkFont(size=12),
+            command=self.ir_para_raiz
+        )
+        self.btn_raiz.pack(side="left", padx=5)
+        
+        self.entry_caminho = ctk.CTkEntry(
+            self.frame_nav, 
+            height=28,
+            font=ctk.CTkFont(size=11)
+        )
+        self.entry_caminho.pack(side="left", fill="x", expand=True, padx=5)
+        self.entry_caminho.insert(0, self.caminho_atual)
+        self.entry_caminho.configure(state="readonly")
+        
+        # Linha 2 da Toolbar: Filtros e Controles
+        self.frame_filtros = ctk.CTkFrame(self.frame_toolbar, fg_color="transparent")
+        self.frame_filtros.pack(fill="x", padx=10, pady=(0, 5))
+        
+        # Recursivo
+        self.chk_recursivo_var = ctk.BooleanVar(value=False)
+        self.chk_recursivo = ctk.CTkCheckBox(
+            self.frame_filtros, 
+            text="Exibir subpastas (Recursivo)", 
+            variable=self.chk_recursivo_var,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            command=self.ao_alterar_recursivo
+        )
+        self.chk_recursivo.pack(side="left", padx=(0, 15))
+        
+        # Ordenação
+        lbl_ordem = ctk.CTkLabel(self.frame_filtros, text="Ordenar:", font=ctk.CTkFont(size=12))
+        lbl_ordem.pack(side="left", padx=5)
+        
+        self.combo_ordem = ctk.CTkOptionMenu(
+            self.frame_filtros,
+            values=[
+                "Data (Mais recente primeiro)", 
+                "Data (Mais antigo primeiro)", 
+                "Nome (A-Z)", 
+                "Tamanho (Maior primeiro)"
+            ],
+            width=190,
+            height=26,
+            font=ctk.CTkFont(size=11),
+            command=self.ao_alterar_ordenacao
+        )
+        self.combo_ordem.pack(side="left", padx=5)
+        self.combo_ordem.set("Data (Mais recente primeiro)")
+        
+        # Busca
+        lbl_busca = ctk.CTkLabel(self.frame_filtros, text="Buscar:", font=ctk.CTkFont(size=12))
+        lbl_busca.pack(side="left", padx=(15, 5))
+        
+        self.entry_busca = ctk.CTkEntry(
+            self.frame_filtros, 
+            placeholder_text="Filtrar por nome...",
+            textvariable=self.var_busca,
+            width=180,
+            height=26,
+            font=ctk.CTkFont(size=11)
+        )
+        self.entry_busca.pack(side="left", padx=5)
+        
+        # Modo de Exibição (Segmented Button)
+        self.segmented_view = ctk.CTkSegmentedButton(
+            self.frame_filtros,
+            values=["Grade / Blocos", "Lista"],
+            width=150,
+            height=26,
+            command=self.ao_alterar_view_mode
+        )
+        self.segmented_view.pack(side="right", padx=(15, 0))
+        self.segmented_view.set("Grade / Blocos")
+        
+        # --- CONTAINER PRINCIPAL DOS ARQUIVOS ---
+        self.scroll_container = ctk.CTkScrollableFrame(self, fg_color="#0f0f0f", corner_radius=0)
+        self.scroll_container.grid(row=1, column=0, sticky="nsew", padx=15, pady=5)
+        
+        # --- BARRA DE AÇÕES INFERIOR ---
+        self.frame_bottom = ctk.CTkFrame(self, fg_color="#1e1e1e", corner_radius=0)
+        self.frame_bottom.grid(row=2, column=0, sticky="ew", padx=15, pady=(5, 15))
+        
+        # Botões utilitários de seleção no canto esquerdo
+        self.frame_sel_utils = ctk.CTkFrame(self.frame_bottom, fg_color="transparent")
+        self.frame_sel_utils.pack(side="left", padx=10, pady=10)
+        
+        self.btn_sel_tudo = ctk.CTkButton(
+            self.frame_sel_utils, 
+            text="Selecionar Tudo", 
+            width=110, 
+            height=30,
+            fg_color="#34495e",
+            hover_color="#2c3e50",
+            font=ctk.CTkFont(size=11),
+            command=self.selecionar_tudo
+        )
+        self.btn_sel_tudo.pack(side="left", padx=3)
+        
+        self.btn_des_tudo = ctk.CTkButton(
+            self.frame_sel_utils, 
+            text="Limpar Seleção", 
+            width=100, 
+            height=30,
+            fg_color="#34495e",
+            hover_color="#2c3e50",
+            font=ctk.CTkFont(size=11),
+            command=self.desmarcar_tudo
+        )
+        self.btn_des_tudo.pack(side="left", padx=3)
+        
+        self.btn_sel_diante = ctk.CTkButton(
+            self.frame_sel_utils, 
+            text="Selecionar Deste em Diante", 
+            width=170, 
+            height=30,
+            fg_color="#34495e",
+            hover_color="#2c3e50",
+            font=ctk.CTkFont(size=11),
+            command=self.selecionar_deste_em_diante
+        )
+        self.btn_sel_diante.pack(side="left", padx=3)
+        
+        # Status de seleção no meio
+        self.lbl_status_selecao = ctk.CTkLabel(
+            self.frame_bottom, 
+            text="0 arquivos selecionados", 
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color="#3498db"
+        )
+        self.lbl_status_selecao.pack(side="left", padx=20)
+        
+        # Botões de confirmação no canto direito
+        self.frame_confirm = ctk.CTkFrame(self.frame_bottom, fg_color="transparent")
+        self.frame_confirm.pack(side="right", padx=10, pady=10)
+        
+        self.btn_cancelar = ctk.CTkButton(
+            self.frame_confirm, 
+            text="Cancelar", 
+            width=100, 
+            height=32,
+            fg_color="#c0392b",
+            hover_color="#962d22",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            command=self.cancelar
+        )
+        self.btn_cancelar.pack(side="right", padx=5)
+        
+        self.btn_confirmar = ctk.CTkButton(
+            self.frame_confirm, 
+            text="Confirmar Seleção", 
+            width=160, 
+            height=32,
+            fg_color="#2ecc71",
+            hover_color="#27ae60",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            command=self.confirmar_selecao
+        )
+        self.btn_confirmar.pack(side="right", padx=5)
+
+    def subir_pasta(self):
+        caminho_pai = os.path.dirname(self.caminho_atual)
+        if len(self.caminho_atual) > len(self.drive_path_raiz) and os.path.exists(caminho_pai):
+            self.caminho_atual = caminho_pai
+            self.ultimo_clicado = None
+            self.atualizar_path_entry()
+            self.carregar_e_renderizar()
+
+    def ir_para_raiz(self):
+        if self.caminho_atual != self.drive_path_raiz:
+            self.caminho_atual = self.drive_path_raiz
+            self.ultimo_clicado = None
+            self.atualizar_path_entry()
+            self.carregar_e_renderizar()
+
+    def entrar_pasta(self, path):
+        if os.path.isdir(path):
+            self.caminho_atual = path
+            self.ultimo_clicado = None
+            self.atualizar_path_entry()
+            self.carregar_e_renderizar()
+
+    def atualizar_path_entry(self):
+        self.entry_caminho.configure(state="normal")
+        self.entry_caminho.delete(0, "end")
+        self.entry_caminho.insert(0, self.caminho_atual)
+        self.entry_caminho.configure(state="readonly")
+
+    def ao_alterar_recursivo(self):
+        self.modo_recursivo = self.chk_recursivo_var.get()
+        if self.modo_recursivo:
+            self.btn_subir.configure(state="disabled")
+            self.btn_raiz.configure(state="disabled")
+        else:
+            self.btn_subir.configure(state="normal")
+            self.btn_raiz.configure(state="normal")
+            
+        self.carregar_e_renderizar()
+
+    def ao_alterar_ordenacao(self, opcao):
+        if "recente" in opcao:
+            self.ordenacao = "date_desc"
+        elif "antigo" in opcao:
+            self.ordenacao = "date_asc"
+        elif "Nome" in opcao:
+            self.ordenacao = "name_asc"
+        elif "Tamanho" in opcao:
+            self.ordenacao = "size_desc"
+            
+        self.ordenar_itens()
+        self.renderizar_itens()
+
+    def ao_alterar_busca(self):
+        self.itens_limite = 80
+        self.ultimo_clicado = None
+        self.renderizar_itens()
+
+    def ao_alterar_view_mode(self, opcao):
+        if "Grade" in opcao:
+            self.modo_exibicao = "grid"
+        else:
+            self.modo_exibicao = "list"
+            
+        self.renderizar_itens()
+
+    def carregar_e_renderizar(self):
+        self.itens_limite = 80
+        with self.lock_queue:
+            self.loading_queue.clear()
+            
+        self.carregar_itens()
+        self.ordenar_itens()
+        self.renderizar_itens()
+
+    def carregar_itens(self):
+        self.itens = []
+        root = self.caminho_atual
+        if not os.path.exists(root):
+            return
+            
+        try:
+            if self.modo_recursivo:
+                for r, dirs, files in os.walk(root):
+                    for file in files:
+                        if file.lower().endswith(('.png', '.jpg', '.jpeg', '.cr2', '.nef', '.arw', '.cr3', '.mp4')):
+                            caminho_completo = os.path.join(r, file)
+                            try:
+                                stat = os.stat(caminho_completo)
+                                mtime = stat.st_mtime
+                                size = stat.st_size
+                            except Exception:
+                                mtime = 0
+                                size = 0
+                            self.itens.append({
+                                'caminho': caminho_completo,
+                                'nome': file,
+                                'tipo': 'file',
+                                'mtime': mtime,
+                                'tamanho': size,
+                                'selecionado': caminho_completo in self.selecionados_set
+                            })
+            else:
+                for item in os.listdir(root):
+                    caminho_completo = os.path.join(root, item)
+                    try:
+                        stat = os.stat(caminho_completo)
+                        mtime = stat.st_mtime
+                        size = stat.st_size
+                        is_dir = os.path.isdir(caminho_completo)
+                    except Exception:
+                        continue
+                        
+                    if is_dir:
+                        if not item.startswith('.') and not item.startswith('$'):
+                            self.itens.append({
+                                'caminho': caminho_completo,
+                                'nome': item,
+                                'tipo': 'dir',
+                                'mtime': mtime,
+                                'tamanho': 0,
+                                'selecionado': False
+                            })
+                    else:
+                        if item.lower().endswith(('.png', '.jpg', '.jpeg', '.cr2', '.nef', '.arw', '.cr3', '.mp4')):
+                            self.itens.append({
+                                'caminho': caminho_completo,
+                                'nome': item,
+                                'tipo': 'file',
+                                'mtime': mtime,
+                                'tamanho': size,
+                                'selecionado': caminho_completo in self.selecionados_set
+                            })
+        except Exception as e:
+            print(f"Erro ao ler diretório: {e}")
+
+    def ordenar_itens(self):
+        if self.ordenacao == "date_desc":
+            self.itens.sort(key=lambda x: (x['tipo'] != 'dir', -x['mtime']))
+        elif self.ordenacao == "date_asc":
+            self.itens.sort(key=lambda x: (x['tipo'] != 'dir', x['mtime']))
+        elif self.ordenacao == "name_asc":
+            self.itens.sort(key=lambda x: (x['tipo'] != 'dir', x['nome'].lower()))
+        elif self.ordenacao == "size_desc":
+            self.itens.sort(key=lambda x: (x['tipo'] != 'dir', -x['tamanho']))
+
+    def obter_itens_filtrados(self):
+        termo = self.var_busca.get().lower().strip()
+        filtrados = []
+        for item in self.itens:
+            if termo and termo not in item['nome'].lower():
+                continue
+            filtrados.append(item)
+        return filtrados
+
+    def renderizar_itens(self):
+        for widget in self.scroll_container.winfo_children():
+            widget.destroy()
+            
+        self.card_widgets.clear()
+        
+        filtered = self.obter_itens_filtrados()
+        
+        if not filtered:
+            lbl_vazio = ctk.CTkLabel(
+                self.scroll_container, 
+                text="Nenhum arquivo ou pasta encontrado.", 
+                text_color="gray",
+                font=ctk.CTkFont(size=14)
+            )
+            lbl_vazio.pack(pady=40)
+            self.atualizar_status_bar()
+            return
+            
+        limit = self.itens_limite
+        items_to_render = filtered[:limit]
+        
+        new_queue = [item['caminho'] for item in items_to_render if item['tipo'] == 'file']
+        with self.lock_queue:
+            self.loading_queue = new_queue
+            
+        if self.modo_exibicao == "grid":
+            self.scroll_container.grid_columnconfigure(0, weight=1)
+            self.frame_grid_inner = ctk.CTkFrame(self.scroll_container, fg_color="transparent")
+            self.frame_grid_inner.pack(fill="both", expand=True)
+            
+            for idx, item in enumerate(items_to_render):
+                self.criar_card_grid(item, idx)
+                
+            if len(filtered) > limit:
+                self.criar_card_carregar_mais(len(filtered) - limit)
+                
+            self.reposicionar_grid()
+        else:
+            for idx, item in enumerate(items_to_render):
+                self.criar_linha_lista(item, idx)
+                
+            if len(filtered) > limit:
+                self.criar_linha_carregar_mais(len(filtered) - limit)
+                
+        self.atualizar_visual_selecionados()
+        self.atualizar_status_bar()
+
+    def criar_card_grid(self, item, idx):
+        path = item['caminho']
+        nome = item['nome']
+        tipo = item['tipo']
+        
+        card_frame = ctk.CTkFrame(
+            self.frame_grid_inner, 
+            width=160, 
+            height=180,
+            fg_color="#2b2b2b",
+            border_width=2,
+            border_color="#2b2b2b",
+            corner_radius=8
+        )
+        card_frame.grid_propagate(False)
+        card_frame.pack_propagate(False)
+        
+        card_frame.grid_rowconfigure(0, weight=1)
+        card_frame.grid_rowconfigure(1, weight=0)
+        card_frame.grid_rowconfigure(2, weight=0)
+        card_frame.grid_columnconfigure(0, weight=1)
+        
+        if tipo == 'dir':
+            lbl_thumb = ctk.CTkLabel(card_frame, text="📁", font=ctk.CTkFont(size=48))
+        else:
+            lbl_thumb = ctk.CTkLabel(card_frame, text="🖼️" if not path.lower().endswith('.mp4') else "🎥", font=ctk.CTkFont(size=48))
+            
+        lbl_thumb.grid(row=0, column=0, sticky="nsew", pady=5)
+        
+        nome_truncado = nome if len(nome) <= 18 else nome[:15] + "..."
+        lbl_name = ctk.CTkLabel(
+            card_frame, 
+            text=nome_truncado, 
+            font=ctk.CTkFont(size=11, weight="bold"),
+            anchor="center"
+        )
+        lbl_name.grid(row=1, column=0, sticky="ew", padx=5, pady=(0, 2))
+        
+        if tipo == 'dir':
+            texto_sub = "Pasta"
+        else:
+            try:
+                import datetime
+                dt = datetime.datetime.fromtimestamp(item['mtime'])
+                dt_str = dt.strftime("%d/%m/%Y %H:%M")
+                tamanho_mb = item['tamanho'] / (1024 * 1024)
+                texto_sub = f"{dt_str}\n{tamanho_mb:.1f} MB"
+            except Exception:
+                texto_sub = ""
+                
+        lbl_sub = ctk.CTkLabel(
+            card_frame, 
+            text=texto_sub, 
+            font=ctk.CTkFont(size=9),
+            text_color="gray",
+            anchor="center"
+        )
+        lbl_sub.grid(row=2, column=0, sticky="ew", padx=5, pady=(0, 5))
+        
+        cb = None
+        if tipo == 'file':
+            cb = ctk.CTkCheckBox(
+                card_frame, 
+                text="", 
+                width=16, 
+                height=16,
+                fg_color="#2ecc71",
+                hover_color="#27ae60",
+                command=lambda p=path: self.ao_clicar_checkbox(p)
+            )
+            cb.place(x=8, y=8)
+            
+        self.card_widgets[path] = {
+            'frame': card_frame,
+            'lbl_thumb': lbl_thumb,
+            'checkbox': cb,
+            'tipo': tipo,
+            'idx': idx
+        }
+        
+        click_cmd = lambda e, p=path, i=idx: self.ao_clicar_item(p, i, e)
+        double_click_cmd = None
+        if tipo == 'dir':
+            double_click_cmd = lambda e, p=path: self.entrar_pasta(p)
+            
+        self.bind_click_events(card_frame, click_cmd, double_click_cmd)
+
+    def criar_linha_lista(self, item, idx):
+        path = item['caminho']
+        nome = item['nome']
+        tipo = item['tipo']
+        
+        row_frame = ctk.CTkFrame(
+            self.scroll_container, 
+            height=45,
+            fg_color="#2b2b2b",
+            border_width=1,
+            border_color="#2b2b2b",
+            corner_radius=4
+        )
+        row_frame.pack(fill="x", pady=2, padx=5)
+        row_frame.pack_propagate(False)
+        
+        row_frame.grid_rowconfigure(0, weight=1)
+        row_frame.grid_columnconfigure(0, weight=0)
+        row_frame.grid_columnconfigure(1, weight=0)
+        row_frame.grid_columnconfigure(2, weight=1)
+        row_frame.grid_columnconfigure(3, weight=0)
+        row_frame.grid_columnconfigure(4, weight=0)
+        
+        cb = None
+        if tipo == 'file':
+            cb = ctk.CTkCheckBox(
+                row_frame, 
+                text="", 
+                width=16, 
+                height=16,
+                fg_color="#2ecc71",
+                hover_color="#27ae60",
+                command=lambda p=path: self.ao_clicar_checkbox(p)
+            )
+            cb.grid(row=0, column=0, padx=(10, 5), sticky="w")
+        else:
+            lbl_space = ctk.CTkLabel(row_frame, text="", width=16)
+            lbl_space.grid(row=0, column=0, padx=(10, 5), sticky="w")
+            
+        if tipo == 'dir':
+            lbl_thumb = ctk.CTkLabel(row_frame, text="📁", font=ctk.CTkFont(size=20), width=40)
+        else:
+            lbl_thumb = ctk.CTkLabel(row_frame, text="🖼️" if not path.lower().endswith('.mp4') else "🎥", font=ctk.CTkFont(size=20), width=40)
+            
+        lbl_thumb.grid(row=0, column=1, padx=5)
+        
+        lbl_name = ctk.CTkLabel(
+            row_frame, 
+            text=nome, 
+            font=ctk.CTkFont(size=12, weight="bold"),
+            anchor="w"
+        )
+        lbl_name.grid(row=0, column=2, padx=10, sticky="ew")
+        
+        if tipo == 'dir':
+            texto_date = ""
+            texto_size = "Pasta"
+        else:
+            try:
+                import datetime
+                dt = datetime.datetime.fromtimestamp(item['mtime'])
+                texto_date = dt.strftime("%d/%m/%Y %H:%M")
+                tamanho_mb = item['tamanho'] / (1024 * 1024)
+                texto_size = f"{tamanho_mb:.1f} MB"
+            except Exception:
+                texto_date = ""
+                texto_size = ""
+                
+        lbl_date = ctk.CTkLabel(
+            row_frame, 
+            text=texto_date, 
+            font=ctk.CTkFont(size=11),
+            text_color="gray",
+            width=150,
+            anchor="e"
+        )
+        lbl_date.grid(row=0, column=3, padx=10, sticky="e")
+        
+        lbl_size = ctk.CTkLabel(
+            row_frame, 
+            text=texto_size, 
+            font=ctk.CTkFont(size=11),
+            text_color="gray",
+            width=90,
+            anchor="e"
+        )
+        lbl_size.grid(row=0, column=4, padx=(10, 20), sticky="e")
+        
+        self.card_widgets[path] = {
+            'frame': row_frame,
+            'lbl_thumb': lbl_thumb,
+            'checkbox': cb,
+            'tipo': tipo,
+            'idx': idx
+        }
+        
+        click_cmd = lambda e, p=path, i=idx: self.ao_clicar_item(p, i, e)
+        double_click_cmd = None
+        if tipo == 'dir':
+            double_click_cmd = lambda e, p=path: self.entrar_pasta(p)
+            
+        self.bind_click_events(row_frame, click_cmd, double_click_cmd)
+
+    def bind_click_events(self, widget, click_cmd, double_click_cmd=None):
+        if not isinstance(widget, ctk.CTkCheckBox):
+            widget.bind("<Button-1>", click_cmd)
+            if double_click_cmd:
+                widget.bind("<Double-Button-1>", double_click_cmd)
+                
+        for child in widget.winfo_children():
+            self.bind_click_events(child, click_cmd, double_click_cmd)
+
+    def criar_card_carregar_mais(self, restam):
+        card_frame = ctk.CTkFrame(
+            self.frame_grid_inner, 
+            width=160, 
+            height=180,
+            fg_color="#1e2530",
+            border_width=2,
+            border_color="#34495e",
+            corner_radius=8
+        )
+        card_frame.grid_propagate(False)
+        card_frame.pack_propagate(False)
+        
+        lbl_icon = ctk.CTkLabel(card_frame, text="➕", font=ctk.CTkFont(size=40))
+        lbl_icon.pack(expand=True, pady=(20, 5))
+        
+        lbl_text = ctk.CTkLabel(
+            card_frame, 
+            text=f"Mostrar Mais\n({restam} itens)", 
+            font=ctk.CTkFont(size=12, weight="bold"),
+            anchor="center"
+        )
+        lbl_text.pack(expand=True, pady=(0, 20))
+        
+        cmd = lambda e: self.carregar_mais_itens()
+        card_frame.bind("<Button-1>", cmd)
+        lbl_icon.bind("<Button-1>", cmd)
+        lbl_text.bind("<Button-1>", cmd)
+        
+        def on_enter(e):
+            card_frame.configure(fg_color="#2c3e50")
+            card_frame.configure(cursor="hand2")
+            lbl_icon.configure(cursor="hand2")
+            lbl_text.configure(cursor="hand2")
+            
+        def on_leave(e):
+            card_frame.configure(fg_color="#1e2530")
+            
+        card_frame.bind("<Enter>", on_enter)
+        card_frame.bind("<Leave>", on_leave)
+        
+        self.card_widgets["carregar_mais"] = {
+            'frame': card_frame
+        }
+
+    def criar_linha_carregar_mais(self, restam):
+        row_frame = ctk.CTkFrame(
+            self.scroll_container, 
+            height=45,
+            fg_color="#1e2530",
+            border_width=1,
+            border_color="#34495e",
+            corner_radius=4
+        )
+        row_frame.pack(fill="x", pady=5, padx=5)
+        row_frame.pack_propagate(False)
+        
+        lbl_text = ctk.CTkLabel(
+            row_frame, 
+            text=f"➕ Mostrar mais {min(80, restam)} itens ({restam} restantes)...", 
+            font=ctk.CTkFont(size=12, weight="bold"),
+            anchor="center"
+        )
+        lbl_text.pack(fill="both", expand=True)
+        
+        cmd = lambda e: self.carregar_mais_itens()
+        row_frame.bind("<Button-1>", cmd)
+        lbl_text.bind("<Button-1>", cmd)
+        
+        def on_enter(e):
+            row_frame.configure(fg_color="#2c3e50")
+            row_frame.configure(cursor="hand2")
+            lbl_text.configure(cursor="hand2")
+            
+        def on_leave(e):
+            row_frame.configure(fg_color="#1e2530")
+            
+        row_frame.bind("<Enter>", on_enter)
+        row_frame.bind("<Leave>", on_leave)
+
+    def carregar_mais_itens(self):
+        self.itens_limite += 80
+        self.renderizar_itens()
+
+    def reposicionar_grid(self, event=None):
+        if self.modo_exibicao != "grid" or not hasattr(self, 'frame_grid_inner') or not self.frame_grid_inner.winfo_exists():
+            return
+            
+        width = self.scroll_container.winfo_width()
+        if width <= 10:
+            width = 850
+            
+        card_width = 160
+        spacing = 15
+        
+        num_cols = max(1, (width - 20) // (card_width + spacing))
+        
+        filtered = self.obter_itens_filtrados()
+        renderizados = filtered[:self.itens_limite]
+        
+        for idx, item in enumerate(renderizados):
+            path = item['caminho']
+            if path in self.card_widgets:
+                frame = self.card_widgets[path]['frame']
+                r = idx // num_cols
+                c = idx % num_cols
+                frame.grid(row=r, column=c, padx=spacing//2, pady=spacing//2)
+                
+        if "carregar_mais" in self.card_widgets:
+            frame = self.card_widgets["carregar_mais"]['frame']
+            idx = len(renderizados)
+            r = idx // num_cols
+            c = idx % num_cols
+            frame.grid(row=r, column=c, padx=spacing//2, pady=spacing//2)
+                
+        for col in range(num_cols):
+            self.frame_grid_inner.grid_columnconfigure(col, weight=0, minsize=card_width + spacing)
+
+    def ao_redimensionar(self, event):
+        if self.modo_exibicao != "grid":
+            return
+        if hasattr(self, "_grid_resize_id"):
+            self.after_cancel(self._grid_resize_id)
+        self._grid_resize_id = self.after(50, self.reposicionar_grid)
+
+    def ao_clicar_item(self, path, idx, event=None):
+        filtered = self.obter_itens_filtrados()
+        item = filtered[idx]
+        
+        if item['tipo'] == 'dir':
+            self.ultimo_clicado = idx
+            return
+            
+        ctrl_pressed = False
+        shift_pressed = False
+        
+        if event:
+            ctrl_pressed = (event.state & 0x0004) != 0 or (event.state & 0x40000) != 0
+            shift_pressed = (event.state & 0x0001) != 0
+            
+        if shift_pressed and self.ultimo_clicado is not None:
+            start = min(self.ultimo_clicado, idx)
+            end = max(self.ultimo_clicado, idx)
+            
+            for i in range(start, end + 1):
+                p = filtered[i]['caminho']
+                if filtered[i]['tipo'] == 'file':
+                    self.selecionados_set.add(p)
+        elif ctrl_pressed:
+            if path in self.selecionados_set:
+                self.selecionados_set.remove(path)
+            else:
+                self.selecionados_set.add(path)
+            self.ultimo_clicado = idx
+        else:
+            self.selecionados_set.clear()
+            self.selecionados_set.add(path)
+            self.ultimo_clicado = idx
+            
+        self.atualizar_visual_selecionados()
+        self.atualizar_status_bar()
+
+    def ao_clicar_checkbox(self, path):
+        if path in self.selecionados_set:
+            self.selecionados_set.remove(path)
+        else:
+            self.selecionados_set.add(path)
+            
+        filtered = self.obter_itens_filtrados()
+        for idx, item in enumerate(filtered):
+            if item['caminho'] == path:
+                self.ultimo_clicado = idx
+                break
+                
+        self.atualizar_visual_selecionados()
+        self.atualizar_status_bar()
+
+    def selecionar_tudo(self):
+        filtered = self.obter_itens_filtrados()
+        for item in filtered:
+            if item['tipo'] == 'file':
+                self.selecionados_set.add(item['caminho'])
+        self.atualizar_visual_selecionados()
+        self.atualizar_status_bar()
+
+    def desmarcar_tudo(self):
+        filtered = self.obter_itens_filtrados()
+        for item in filtered:
+            if item['caminho'] in self.selecionados_set:
+                self.selecionados_set.remove(item['caminho'])
+        self.atualizar_visual_selecionados()
+        self.atualizar_status_bar()
+
+    def selecionar_deste_em_diante(self):
+        if self.ultimo_clicado is None:
+            messagebox.showinfo("Informação", "Por favor, clique em uma foto primeiro para servir de referência.")
+            return
+            
+        filtered = self.obter_itens_filtrados()
+        if self.ultimo_clicado >= len(filtered):
+            return
+            
+        for i in range(self.ultimo_clicado, len(filtered)):
+            item = filtered[i]
+            if item['tipo'] == 'file':
+                self.selecionados_set.add(item['caminho'])
+                
+        self.atualizar_visual_selecionados()
+        self.atualizar_status_bar()
+
+    def atualizar_visual_selecionados(self):
+        filtered = self.obter_itens_filtrados()
+        for item in filtered:
+            path = item['caminho']
+            if path in self.card_widgets:
+                widgets = self.card_widgets[path]
+                frame = widgets['frame']
+                is_sel = path in self.selecionados_set
+                
+                if is_sel:
+                    frame.configure(fg_color="#1f538d", border_color="#3498db")
+                    if widgets['checkbox']:
+                        widgets['checkbox'].select()
+                else:
+                    frame.configure(fg_color="#2b2b2b", border_color="#2b2b2b")
+                    if widgets['checkbox']:
+                        widgets['checkbox'].deselect()
+
+    def atualizar_status_bar(self):
+        total_selecionados = len(self.selecionados_set)
+        total_tamanho = 0
+        for item in self.itens:
+            if item['caminho'] in self.selecionados_set:
+                total_tamanho += item['tamanho']
+                
+        tamanho_mb = total_tamanho / (1024 * 1024)
+        if tamanho_mb > 1024:
+            tamanho_str = f"{tamanho_mb/1024:.2f} GB"
+        else:
+            tamanho_str = f"{tamanho_mb:.1f} MB"
+            
+        self.lbl_status_selecao.configure(
+            text=f"📂 {total_selecionados} foto(s) selecionada(s) ({tamanho_str})"
+        )
+
+    def thumbnail_loader_loop(self):
+        while self.loop_active:
+            path_to_load = None
+            with self.lock_queue:
+                if self.loading_queue:
+                    path_to_load = self.loading_queue.pop(0)
+                    
+            if not path_to_load:
+                time.sleep(0.05)
+                continue
+                
+            with self.lock_cache:
+                in_cache = path_to_load in self.cache_thumbnails
+                
+            if not in_cache:
+                img_pil = self.gerar_thumbnail(path_to_load)
+                if img_pil:
+                    with self.lock_cache:
+                        self.cache_thumbnails[path_to_load] = img_pil
+                    if self.loop_active:
+                        self.after(0, lambda p=path_to_load: self.atualizar_imagem_card(p))
+            
+            time.sleep(0.01)
+
+    def gerar_thumbnail(self, path):
+        try:
+            ext = os.path.splitext(path)[1].lower()
+            if ext in ['.cr2', '.nef', '.arw', '.cr3']:
+                try:
+                    with rawpy.imread(path) as raw:
+                        thumb = raw.extract_thumb()
+                        import io
+                        if thumb.format == rawpy.ThumbFormat.JPEG:
+                            img = Image.open(io.BytesIO(thumb.data))
+                        else:
+                            rgb = raw.postprocess(use_camera_wb=True, half_size=True, no_auto_bright=True)
+                            img = Image.fromarray(rgb)
+                except Exception:
+                    with rawpy.imread(path) as raw:
+                        rgb = raw.postprocess(use_camera_wb=True, half_size=True, no_auto_bright=True)
+                        img = Image.fromarray(rgb)
+            else:
+                img = Image.open(path)
+                try:
+                    raw_thumb = img.info.get("thumbnail")
+                    if raw_thumb:
+                        import io
+                        img = Image.open(io.BytesIO(raw_thumb))
+                    else:
+                        img.draft("RGB", (320, 240))
+                except Exception:
+                    pass
+                img = ImageOps.exif_transpose(img)
+                
+            img.thumbnail((160, 120), Image.Resampling.LANCZOS)
+            return img
+        except Exception as e:
+            print(f"Erro ao gerar thumbnail para {path}: {e}")
+            return None
+
+    def atualizar_imagem_card(self, path):
+        if not self.loop_active:
+            return
+            
+        with self.lock_cache:
+            img_pil = self.cache_thumbnails.get(path)
+            
+        if not img_pil:
+            return
+            
+        if path in self.card_widgets:
+            widgets = self.card_widgets[path]
+            lbl_thumb = widgets['lbl_thumb']
+            
+            if lbl_thumb.winfo_exists():
+                try:
+                    display_size = (120, 90) if self.modo_exibicao == "grid" else (40, 30)
+                    ctk_img = ctk.CTkImage(
+                        light_image=img_pil,
+                        dark_image=img_pil,
+                        size=display_size
+                    )
+                    lbl_thumb.configure(image=ctk_img, text="")
+                except Exception as e:
+                    print(f"Erro ao atualizar imagem no card: {e}")
+
+    def confirmar_selecao(self):
+        self.loop_active = False
+        self.parent.arquivos_selecionados_manualmente = list(self.selecionados_set)
+        self.parent.atualizar_status_selecao_manual()
+        self.grab_release()
+        self.destroy()
+
+    def cancelar(self):
+        self.loop_active = False
+        self.grab_release()
+        self.destroy()
+
+    def ao_fechar_janela(self):
+        self.loop_active = False
+        self.grab_release()
+        self.destroy()
+
+
 class HistoricoDadosWindow(ctk.CTkToplevel):
     def __init__(self, parent):
         super().__init__(parent)
@@ -1400,6 +2402,7 @@ class ImportadorFotosApp(ctk.CTk):
         self.drive_path = ""
         self.checkboxes_pastas = []
         self.arquivos_transferidos = [] # Guarda o caminho de todas as fotos transferidas com sucesso
+        self.arquivos_selecionados_manualmente = []
         self.active_servir = None       # Dia de servir ativo atualmente
         self.servir_em_edicao = None    # Dia de servir sendo editado atualmente
         
@@ -2649,6 +3652,18 @@ class ImportadorFotosApp(ctk.CTk):
         self.lbl_vazio = ctk.CTkLabel(self.frame_pastas, text="Nenhum cartão detectado.")
         self.lbl_vazio.pack(pady=15)
 
+        self.btn_seletor_manual = ctk.CTkButton(
+            self.container_principal,
+            text="📷 Abrir Seletor Avançado / Gerenciador de Fotos",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            height=30,
+            fg_color="#e67e22",
+            hover_color="#d35400",
+            command=self.abrir_seletor_manual,
+            state="disabled"
+        )
+        self.btn_seletor_manual.pack(pady=(2, 4), padx=30, fill="x")
+
         # 5. CONFIGURAÇÃO DE CATEGORIA (Somente para Servir)
         if self.active_servir:
             self.lbl_categoria = ctk.CTkLabel(self.container_principal, text="Pasta de Destino (Categoria):", font=ctk.CTkFont(weight="bold"))
@@ -2688,6 +3703,28 @@ class ImportadorFotosApp(ctk.CTk):
             text_color="#2ecc71"
         )
         self.entry_caminho_final.pack(pady=(0, 6), padx=30, fill="x")
+
+        # Status da seleção manual
+        self.frame_selecao_manual_status = ctk.CTkFrame(self.container_principal, fg_color="#1a2536", height=32, corner_radius=6)
+        
+        self.lbl_selecao_manual_status = ctk.CTkLabel(
+            self.frame_selecao_manual_status,
+            text="Sem seleção manual. Copiará pastas selecionadas.",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color="gray"
+        )
+        self.lbl_selecao_manual_status.pack(side="left", padx=10, pady=5)
+        
+        self.btn_limpar_selecao_manual = ctk.CTkButton(
+            self.frame_selecao_manual_status,
+            text="❌ Limpar",
+            width=60,
+            height=20,
+            fg_color="#e74c3c",
+            hover_color="#c0392b",
+            font=ctk.CTkFont(size=10, weight="bold"),
+            command=self.limpar_selecao_manual
+        )
 
         # 8. PROGRESSO
         self.lbl_progresso = ctk.CTkLabel(self.container_principal, text="Progresso: 0%")
@@ -3063,6 +4100,9 @@ class ImportadorFotosApp(ctk.CTk):
             self.atualizar_ui_cartao_detectado(pasta, e_manual=True)
 
     def atualizar_ui_cartao_detectado(self, drive, e_manual=False):
+        if hasattr(self, 'btn_seletor_manual'):
+            self.btn_seletor_manual.configure(state="normal")
+            
         if e_manual:
             self.lbl_status.configure(text=f"Origem Manual Selecionada: {drive}", text_color="#3498db")
         else:
@@ -3110,6 +4150,9 @@ class ImportadorFotosApp(ctk.CTk):
             print(f"Erro ao ler cartão: {e}")
 
     def atualizar_ui_cartao_removido(self):
+        if hasattr(self, 'btn_seletor_manual'):
+            self.btn_seletor_manual.configure(state="disabled")
+            
         self.lbl_status.configure(text="Aguardando inserção do Cartão SD...", text_color="orange")
         for widget in self.frame_pastas.winfo_children():
             widget.destroy()
@@ -3152,6 +4195,10 @@ class ImportadorFotosApp(ctk.CTk):
             self.entry_nome.delete(0, 'end')
             
         self.arquivos_transferidos.clear()
+        if hasattr(self, 'arquivos_selecionados_manualmente') and self.arquivos_selecionados_manualmente is not None:
+            self.arquivos_selecionados_manualmente.clear()
+        if hasattr(self, 'atualizar_status_selecao_manual'):
+            self.atualizar_status_selecao_manual()
         
         self.progressbar.set(0)
         self.lbl_progresso.configure(text="Progresso: 0%")
@@ -3186,10 +4233,13 @@ class ImportadorFotosApp(ctk.CTk):
             messagebox.showwarning("Aviso", "Selecione a pasta de destino no computador!")
             return
 
-        pastas_selecionadas = [var.get() for var in self.checkboxes_pastas if var.get() != ""]
-        if not pastas_selecionadas:
-            messagebox.showwarning("Aviso", "Selecione pelo menos uma pasta do cartão para descarregar!")
-            return
+        if hasattr(self, 'arquivos_selecionados_manualmente') and self.arquivos_selecionados_manualmente:
+            pastas_selecionadas = []
+        else:
+            pastas_selecionadas = [var.get() for var in self.checkboxes_pastas if var.get() != ""]
+            if not pastas_selecionadas:
+                messagebox.showwarning("Aviso", "Selecione pelo menos uma pasta do cartão para descarregar ou use o Seletor Avançado!")
+                return
 
         self.btn_iniciar.configure(state="disabled")
         self.btn_selecionar.configure(state="disabled")
@@ -3228,13 +4278,16 @@ class ImportadorFotosApp(ctk.CTk):
         os.makedirs(destino, exist_ok=True)
         arquivos_para_copiar = []
         
-        for pasta_relativa in pastas_selecionadas:
-            pasta_origem = os.path.join(self.drive_path, os.path.normpath(pasta_relativa))
-            if os.path.exists(pasta_origem):
-                for root, dirs, files in os.walk(pasta_origem):
-                    for file in files:
-                        if file.lower().endswith(('.png', '.jpg', '.jpeg', '.cr2', '.nef', '.arw', '.cr3', '.mp4')):
-                            arquivos_para_copiar.append(os.path.join(root, file))
+        if hasattr(self, 'arquivos_selecionados_manualmente') and self.arquivos_selecionados_manualmente:
+            arquivos_para_copiar = self.arquivos_selecionados_manualmente.copy()
+        else:
+            for pasta_relativa in pastas_selecionadas:
+                pasta_origem = os.path.join(self.drive_path, os.path.normpath(pasta_relativa))
+                if os.path.exists(pasta_origem):
+                    for root, dirs, files in os.walk(pasta_origem):
+                        for file in files:
+                            if file.lower().endswith(('.png', '.jpg', '.jpeg', '.cr2', '.nef', '.arw', '.cr3', '.mp4')):
+                                arquivos_para_copiar.append(os.path.join(root, file))
 
         total_arquivos = len(arquivos_para_copiar)
         if total_arquivos == 0:
@@ -3372,6 +4425,44 @@ class ImportadorFotosApp(ctk.CTk):
         else:
             self.btn_enviar_drive.configure(state="disabled")
             messagebox.showinfo("Concluído", "A cópia foi finalizada, mas nenhuma imagem compatível com revisão foi transferida.")
+
+    def abrir_seletor_manual(self):
+        if not self.cartao_detectado or not self.drive_path:
+            messagebox.showwarning("Aviso", "Por favor, garanta que um cartão SD está inserido ou selecione uma Origem Manual!")
+            return
+            
+        iniciais = []
+        if hasattr(self, 'arquivos_selecionados_manualmente') and self.arquivos_selecionados_manualmente:
+            iniciais = self.arquivos_selecionados_manualmente
+            
+        self.seletor_window = SeletorArquivosWindow(self, self.drive_path, iniciais)
+
+    def limpar_selecao_manual(self):
+        if hasattr(self, 'arquivos_selecionados_manualmente'):
+            self.arquivos_selecionados_manualmente.clear()
+        self.atualizar_status_selecao_manual()
+
+    def atualizar_status_selecao_manual(self):
+        if not hasattr(self, 'lbl_selecao_manual_status') or not self.lbl_selecao_manual_status.winfo_exists():
+            return
+            
+        if hasattr(self, 'arquivos_selecionados_manualmente') and self.arquivos_selecionados_manualmente:
+            qtd = len(self.arquivos_selecionados_manualmente)
+            self.lbl_selecao_manual_status.configure(
+                text=f"📍 Seleção Manual Ativa: {qtd} foto(s) selecionada(s) do cartão.",
+                text_color="#2ecc71"
+            )
+            self.btn_limpar_selecao_manual.pack(side="right", padx=5)
+            self.frame_selecao_manual_status.pack(pady=4, padx=30, fill="x")
+            self.btn_iniciar.configure(text=f"Iniciar Transferência ({qtd} Fotos Selecionadas)")
+        else:
+            self.lbl_selecao_manual_status.configure(
+                text="Sem seleção manual. Copiará pastas selecionadas.",
+                text_color="gray"
+            )
+            self.btn_limpar_selecao_manual.pack_forget()
+            self.frame_selecao_manual_status.pack_forget()
+            self.btn_iniciar.configure(text="Iniciar Transferência")
 
     def abrir_revisor(self):
         if not self.arquivos_transferidos:
