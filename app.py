@@ -3947,44 +3947,8 @@ class ImportadorFotosApp(ctk.CTk):
                     self.after(0, self.finalizar_upload_gui)
                     return
 
-            # Se tivermos um Servir ativo, criamos a estrutura de subpastas no Google Drive
-            if self.active_servir and folder_id != 'root':
-                self.after(0, lambda: self.lbl_progresso.configure(text="Criando estrutura de pastas no Drive..."))
-                nome_fotografo = self.obter_nome_fotografo_ativo()
-                categoria_selecionada = self.combo_categoria_var.get()
-                
-                # Detecta se há subpasta local como Fotografo_2, Fotografo_3
-                subpasta_nome = None
-                if self.arquivos_transferidos:
-                    pai_local = os.path.basename(os.path.dirname(self.arquivos_transferidos[0]))
-                    if pai_local and pai_local != nome_fotografo:
-                        subpasta_nome = pai_local
-                
-                if categoria_selecionada and categoria_selecionada != "Raiz (Nenhuma)":
-                    id_pasta_cat = self.obter_ou_criar_pasta_drive(service, categoria_selecionada, folder_id)
-                    if id_pasta_cat:
-                        folder_id = id_pasta_cat
-                        nome_destino_exibicao += f" -> '{categoria_selecionada}'"
-                        
-                        id_pasta_fotografo = self.obter_ou_criar_pasta_drive(service, nome_fotografo, folder_id)
-                        if id_pasta_fotografo:
-                            folder_id = id_pasta_fotografo
-                            nome_destino_exibicao += f" -> '{nome_fotografo}'"
-                            if subpasta_nome:
-                                id_sub = self.obter_ou_criar_pasta_drive(service, subpasta_nome, folder_id)
-                                if id_sub:
-                                    folder_id = id_sub
-                                    nome_destino_exibicao += f" -> '{subpasta_nome}'"
-                else:
-                    id_pasta_fotografo = self.obter_ou_criar_pasta_drive(service, nome_fotografo, folder_id)
-                    if id_pasta_fotografo:
-                        folder_id = id_pasta_fotografo
-                        nome_destino_exibicao += f" -> '{nome_fotografo}'"
-                        if subpasta_nome:
-                            id_sub = self.obter_ou_criar_pasta_drive(service, subpasta_nome, folder_id)
-                            if id_sub:
-                                folder_id = id_sub
-                                nome_destino_exibicao += f" -> '{subpasta_nome}'"
+            # O upload agora envia as fotos diretamente para a pasta selecionada no Drive,
+            # sem criar a estrutura de pastas de categorias e fotógrafos.
 
             arquivos_para_enviar = self.arquivos_transferidos.copy()
             total_arquivos = len(arquivos_para_enviar)
