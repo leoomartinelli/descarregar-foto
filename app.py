@@ -1419,6 +1419,8 @@ class ImportadorFotosApp(ctk.CTk):
         self.arquivos_transferidos = [] # Guarda o caminho de todas as fotos transferidas com sucesso
         self.active_servir = None       # Dia de servir ativo atualmente
         self.servir_em_edicao = None    # Dia de servir sendo editado atualmente
+        self.lista_drive_temp = []
+        self.local_path_temp = ctk.StringVar(value="")
         
         # Configurações de Rede Local (LAN)
         self.network_mode = "lider"      # "lider" ou "auxiliar"
@@ -1951,6 +1953,25 @@ class ImportadorFotosApp(ctk.CTk):
             self.frame_lista_pastas.pack(fill="x", padx=10, pady=(0, 10))
             self.atualizar_lista_pastas_ui()
             
+            # 3.5. Pasta do Computador (Local)
+            lbl_local_titulo = ctk.CTkLabel(scroll_form, text="Pasta do Computador (Opcional):", font=ctk.CTkFont(weight="bold", size=13), text_color="#2ecc71")
+            lbl_local_titulo.pack(anchor="w", padx=10, pady=(10, 2))
+            
+            frame_local_path = ctk.CTkFrame(scroll_form, fg_color="transparent")
+            frame_local_path.pack(fill="x", padx=10, pady=(0, 10))
+            frame_local_path.grid_columnconfigure(0, weight=1)
+            
+            self.entry_local_path_servir = ctk.CTkEntry(frame_local_path, textvariable=self.local_path_temp, placeholder_text="Pasta padrão do sistema (Fotos_Sistema)")
+            self.entry_local_path_servir.grid(row=0, column=0, sticky="ew", padx=(0, 5))
+            
+            btn_procurar_local_servir = ctk.CTkButton(
+                frame_local_path,
+                text="Procurar...",
+                width=80,
+                command=self.selecionar_destino_servir
+            )
+            btn_procurar_local_servir.grid(row=0, column=1, sticky="e")
+            
             # 4. Google Drive
             lbl_drive_titulo = ctk.CTkLabel(scroll_form, text="Google Drive (Opcional):", font=ctk.CTkFont(weight="bold", size=13), text_color="#3498db")
             lbl_drive_titulo.pack(anchor="w", padx=10, pady=(10, 2))
@@ -1975,8 +1996,28 @@ class ImportadorFotosApp(ctk.CTk):
             
             lbl_drive_nome = ctk.CTkLabel(scroll_form, text="Nome de Exibição da Pasta:")
             lbl_drive_nome.pack(anchor="w", padx=10)
-            self.entry_drive_nome_servir = ctk.CTkEntry(scroll_form, placeholder_text="Nome da Pasta (busca automática ou digite)")
-            self.entry_drive_nome_servir.pack(fill="x", padx=10, pady=(0, 15))
+            
+            frame_drive_nome_add = ctk.CTkFrame(scroll_form, fg_color="transparent")
+            frame_drive_nome_add.pack(fill="x", padx=10, pady=(0, 5))
+            frame_drive_nome_add.grid_columnconfigure(0, weight=1)
+            
+            self.entry_drive_nome_servir = ctk.CTkEntry(frame_drive_nome_add, placeholder_text="Nome da Pasta (busca automática ou digite)")
+            self.entry_drive_nome_servir.grid(row=0, column=0, sticky="ew", padx=(0, 5))
+            self.entry_drive_nome_servir.bind("<Return>", lambda e: self.adicionar_drive_lista())
+            
+            btn_add_drive = ctk.CTkButton(
+                frame_drive_nome_add, 
+                text="+ Add Pasta", 
+                width=90, 
+                font=ctk.CTkFont(weight="bold"), 
+                command=self.adicionar_drive_lista
+            )
+            btn_add_drive.grid(row=0, column=1, sticky="e")
+            
+            # Container para a lista de pastas do Drive adicionadas
+            self.frame_lista_drive = ctk.CTkScrollableFrame(scroll_form, height=65, fg_color="#111")
+            self.frame_lista_drive.pack(fill="x", padx=10, pady=(0, 15))
+            self.atualizar_lista_drive_ui()
             
             # Botão Criar
             self.btn_criar_servir = ctk.CTkButton(
@@ -2137,6 +2178,64 @@ class ImportadorFotosApp(ctk.CTk):
             )
             btn_del.pack(side="right", padx=5)
 
+    def selecionar_destino_servir(self):
+        pasta = filedialog.askdirectory(title="Selecione a pasta do computador para este Servir")
+        if pasta:
+            self.local_path_temp.set(pasta)
+
+    def adicionar_drive_lista(self, event=None):
+        link = self.entry_drive_link_servir.get().strip()
+        nome = self.entry_drive_nome_servir.get().strip()
+        if not link:
+            messagebox.showwarning("Aviso", "Insira o link ou ID da pasta do Google Drive!")
+            return
+        if not nome:
+            nome = "Pasta do Google Drive"
+            
+        # Verifica se já está adicionada
+        for item in self.lista_drive_temp:
+            if item['link'] == link:
+                messagebox.showwarning("Aviso", "Esta pasta do Google Drive já foi adicionada!")
+                return
+                
+        self.lista_drive_temp.append({"link": link, "nome": nome})
+        self.entry_drive_link_servir.delete(0, 'end')
+        self.entry_drive_nome_servir.delete(0, 'end')
+        self.atualizar_lista_drive_ui()
+
+    def remover_drive_lista(self, index):
+        if 0 <= index < len(self.lista_drive_temp):
+            self.lista_drive_temp.pop(index)
+            self.atualizar_lista_drive_ui()
+
+    def atualizar_lista_drive_ui(self):
+        for widget in self.frame_lista_drive.winfo_children():
+            widget.destroy()
+            
+        if not self.lista_drive_temp:
+            lbl_vazio = ctk.CTkLabel(self.frame_lista_drive, text="Nenhuma pasta do Drive adicionada.", text_color="gray", font=ctk.CTkFont(size=12))
+            lbl_vazio.pack(pady=10)
+            return
+            
+        for i, item in enumerate(self.lista_drive_temp):
+            frame_item = ctk.CTkFrame(self.frame_lista_drive, fg_color="#222")
+            frame_item.pack(fill="x", pady=2, padx=5)
+            
+            lbl_nome = ctk.CTkLabel(frame_item, text=item['nome'], anchor="w")
+            lbl_nome.pack(side="left", padx=10, fill="x", expand=True)
+            
+            # Use default argument binding to prevent index closure binding bug
+            btn_del = ctk.CTkButton(
+                frame_item, 
+                text="❌", 
+                width=24, 
+                height=20, 
+                fg_color="transparent", 
+                hover_color="#e74c3c", 
+                command=lambda idx=i: self.remover_drive_lista(idx)
+            )
+            btn_del.pack(side="right", padx=5)
+
     def buscar_nome_drive_thread(self):
         link = self.entry_drive_link_servir.get().strip()
         if not link:
@@ -2220,19 +2319,32 @@ class ImportadorFotosApp(ctk.CTk):
             messagebox.showwarning("Aviso", "Por favor, adicione pelo menos um voluntário!")
             return
             
+        # Se preencheu os campos do Drive mas não clicou em adicionar
         drive_link = self.entry_drive_link_servir.get().strip()
         drive_nome = self.entry_drive_nome_servir.get().strip()
-        if drive_link and not drive_nome:
-            drive_nome = "Pasta do Google Drive"
-            
+        if drive_link:
+            if not drive_nome:
+                drive_nome = "Pasta do Google Drive"
+            if not any(item['link'] == drive_link for item in self.lista_drive_temp):
+                self.lista_drive_temp.append({"link": drive_link, "nome": drive_nome})
+
+        primeiro_link = self.lista_drive_temp[0]['link'] if self.lista_drive_temp else ""
+        primeiro_nome = self.lista_drive_temp[0]['nome'] if self.lista_drive_temp else ""
+
+        local_path = self.local_path_temp.get().strip()
+        local_nome = os.path.basename(local_path) if local_path else ""
+
         novo_servir = {
             "id": str(int(time.time())),
             "nome": nome_servir,
             "data_criacao": date.today().isoformat(),
             "voluntarios": self.lista_voluntarios_temp.copy(),
             "pastas_predefinidas": self.lista_pastas_temp.copy(),
-            "drive_link": drive_link,
-            "drive_nome": drive_nome
+            "drive_link": primeiro_link,
+            "drive_nome": primeiro_nome,
+            "drive_folders": self.lista_drive_temp.copy(),
+            "local_path": local_path,
+            "local_nome": local_nome
         }
         
         self.dias_servir.append(novo_servir)
@@ -2240,6 +2352,8 @@ class ImportadorFotosApp(ctk.CTk):
         
         # Pré-cria a estrutura de pastas localmente assim que o servir é criado (apenas as categorias)
         bases_criar = [self.destino_padrao_app]
+        if local_path:
+            bases_criar.append(local_path)
         for p in self.pastas_local:
             bases_criar.append(p['caminho'])
             
@@ -2258,8 +2372,11 @@ class ImportadorFotosApp(ctk.CTk):
         self.entry_drive_nome_servir.delete(0, 'end')
         self.lista_voluntarios_temp.clear()
         self.lista_pastas_temp.clear()
+        self.lista_drive_temp.clear()
+        self.local_path_temp.set("")
         self.atualizar_lista_vol_ui()
         self.atualizar_lista_pastas_ui()
+        self.atualizar_lista_drive_ui()
         
         self.atualizar_lista_dias_ui()
         
@@ -2287,6 +2404,16 @@ class ImportadorFotosApp(ctk.CTk):
         
         self.entry_drive_nome_servir.delete(0, 'end')
         self.entry_drive_nome_servir.insert(0, servir.get('drive_nome', ''))
+        
+        # Carrega pasta local
+        self.local_path_temp.set(servir.get('local_path', ''))
+
+        # Carrega a lista de pastas do Drive
+        drive_folders = servir.get('drive_folders', [])
+        if not drive_folders and servir.get('drive_link'):
+            drive_folders = [{"link": servir.get('drive_link'), "nome": servir.get('drive_nome', 'Pasta do Google Drive')}]
+        self.lista_drive_temp = drive_folders.copy()
+        self.atualizar_lista_drive_ui()
         
         # Altera o botão de ação principal
         self.btn_criar_servir.configure(
@@ -2324,6 +2451,9 @@ class ImportadorFotosApp(ctk.CTk):
         
         self.entry_drive_link_servir.delete(0, 'end')
         self.entry_drive_nome_servir.delete(0, 'end')
+        self.lista_drive_temp = []
+        self.atualizar_lista_drive_ui()
+        self.local_path_temp.set("")
         
         # Restaura o botão de ação principal
         self.btn_criar_servir.configure(
@@ -2354,25 +2484,40 @@ class ImportadorFotosApp(ctk.CTk):
             messagebox.showwarning("Aviso", "Por favor, adicione pelo menos um voluntário!")
             return
             
+        # Se preencheu os campos do Drive mas não clicou em adicionar
         drive_link = self.entry_drive_link_servir.get().strip()
         drive_nome = self.entry_drive_nome_servir.get().strip()
-        if drive_link and not drive_nome:
-            drive_nome = "Pasta do Google Drive"
-            
+        if drive_link:
+            if not drive_nome:
+                drive_nome = "Pasta do Google Drive"
+            if not any(item['link'] == drive_link for item in self.lista_drive_temp):
+                self.lista_drive_temp.append({"link": drive_link, "nome": drive_nome})
+
+        primeiro_link = self.lista_drive_temp[0]['link'] if self.lista_drive_temp else ""
+        primeiro_nome = self.lista_drive_temp[0]['nome'] if self.lista_drive_temp else ""
+
+        local_path = self.local_path_temp.get().strip()
+        local_nome = os.path.basename(local_path) if local_path else ""
+
         # Atualiza os dados no objeto servir em edicao
         for idx, servir in enumerate(self.dias_servir):
             if servir.get('id') == self.servir_em_edicao.get('id'):
                 self.dias_servir[idx]['nome'] = nome_servir
                 self.dias_servir[idx]['voluntarios'] = self.lista_voluntarios_temp.copy()
                 self.dias_servir[idx]['pastas_predefinidas'] = self.lista_pastas_temp.copy()
-                self.dias_servir[idx]['drive_link'] = drive_link
-                self.dias_servir[idx]['drive_nome'] = drive_nome
+                self.dias_servir[idx]['drive_link'] = primeiro_link
+                self.dias_servir[idx]['drive_nome'] = primeiro_nome
+                self.dias_servir[idx]['drive_folders'] = self.lista_drive_temp.copy()
+                self.dias_servir[idx]['local_path'] = local_path
+                self.dias_servir[idx]['local_nome'] = local_nome
                 
         # Salva no arquivo
         self.salvar_dias_servir(self.dias_servir)
         
         # Se adicionou novas pastas de categoria, pré-criamos a estrutura de pastas localmente
         bases_criar = [self.destino_padrao_app]
+        if local_path:
+            bases_criar.append(local_path)
         for p in self.pastas_local:
             bases_criar.append(p['caminho'])
             
@@ -2392,8 +2537,11 @@ class ImportadorFotosApp(ctk.CTk):
         self.entry_drive_nome_servir.delete(0, 'end')
         self.lista_voluntarios_temp.clear()
         self.lista_pastas_temp.clear()
+        self.lista_drive_temp.clear()
+        self.local_path_temp.set("")
         self.atualizar_lista_vol_ui()
         self.atualizar_lista_pastas_ui()
+        self.atualizar_lista_drive_ui()
         
         # Restaura título do formulário
         self.lbl_dir_titulo.configure(text="Criar Novo Dia do Servir", text_color="#2ecc71")
@@ -2515,6 +2663,14 @@ class ImportadorFotosApp(ctk.CTk):
         self.active_servir = servir
         if servir:
             nome_servir = servir.get('nome')
+            
+            # Se o evento possui uma pasta local específica configurada, ativa ela como destino!
+            local_path = servir.get('local_path')
+            if local_path:
+                self.destino_path.set(local_path)
+            else:
+                self.destino_path.set(self.destino_padrao_app)
+                
             bases_criar = []
             
             destino_base = self.destino_path.get()
@@ -2749,6 +2905,20 @@ class ImportadorFotosApp(ctk.CTk):
 
         # 6. PASTA DE DESTINO NO COMPUTADOR
         self.destino_path.set(self.destino_padrao_app)
+        
+        lbl_destino = ctk.CTkLabel(self.container_principal, text="Pasta de Destino no Computador:", font=ctk.CTkFont(weight="bold"))
+        lbl_destino.pack(anchor="w", padx=30, pady=(4, 2))
+        
+        self.combo_destino_var = ctk.StringVar(value="Pasta do Aplicativo (Padrão)")
+        self.combo_destino = ctk.CTkOptionMenu(
+            self.container_principal,
+            values=["Pasta do Aplicativo (Padrão)"],
+            variable=self.combo_destino_var,
+            command=self.ao_alterar_destino_combo,
+            height=28
+        )
+        self.combo_destino.pack(pady=(0, 4), padx=30, fill="x")
+        self.recarregar_combo_destino()
 
 
 
@@ -3028,8 +3198,16 @@ class ImportadorFotosApp(ctk.CTk):
     def recarregar_combo_drive(self):
         self.pastas_drive = self.carregar_config_pastas()
         valores_menu = []
-        if self.active_servir and self.active_servir.get('drive_link'):
-            valores_menu.append(f"Pasta do Servir: {self.active_servir.get('drive_nome', 'Configurada')}")
+        
+        # Adiciona pastas do Drive do Servir ativo
+        if self.active_servir:
+            drive_folders = self.active_servir.get('drive_folders', [])
+            if not drive_folders and self.active_servir.get('drive_link'):
+                drive_folders = [{"link": self.active_servir.get('drive_link'), "nome": self.active_servir.get('drive_nome', 'Configurada')}]
+                
+            for folder in drive_folders:
+                valores_menu.append(f"Pasta do Servir: {folder.get('nome')}")
+                
         valores_menu.append("Raiz do Google Drive (Padrão)")
         for p in self.pastas_drive:
             valores_menu.append(p['nome'])
@@ -3046,9 +3224,15 @@ class ImportadorFotosApp(ctk.CTk):
 
     def obter_link_drive_selecionado(self):
         opcao_selecionada = self.combo_drive_var.get()
-        if self.active_servir and self.active_servir.get('drive_link'):
-            if opcao_selecionada.startswith("Pasta do Servir:"):
-                return self.active_servir.get('drive_link')
+        if self.active_servir:
+            drive_folders = self.active_servir.get('drive_folders', [])
+            if not drive_folders and self.active_servir.get('drive_link'):
+                drive_folders = [{"link": self.active_servir.get('drive_link'), "nome": self.active_servir.get('drive_nome', 'Configurada')}]
+                
+            for folder in drive_folders:
+                if opcao_selecionada == f"Pasta do Servir: {folder.get('nome')}":
+                    return folder.get('link')
+                    
         if opcao_selecionada == "Raiz do Google Drive (Padrão)":
             return ""
         for p in self.pastas_drive:
@@ -3058,11 +3242,22 @@ class ImportadorFotosApp(ctk.CTk):
 
     def recarregar_combo_destino(self):
         self.pastas_local = self.carregar_config_pastas_local()
-        self.destino_path.set(self.destino_padrao_app)
+        
+        # Padrão é a pasta padrão do aplicativo, ou a pasta do Servir se tiver uma ativa!
+        default_destination = self.destino_padrao_app
+        if self.active_servir and self.active_servir.get('local_path'):
+            if os.path.exists(self.active_servir.get('local_path')):
+                default_destination = self.active_servir.get('local_path')
+                
+        self.destino_path.set(default_destination)
         if not hasattr(self, 'combo_destino') or not self.combo_destino.winfo_exists():
             return
             
         valores_menu = []
+        if self.active_servir and self.active_servir.get('local_path'):
+            local_nome = self.active_servir.get('local_nome') or os.path.basename(self.active_servir.get('local_path')) or "Pasta do Servir"
+            valores_menu.append(f"Pasta do Servir: {local_nome}")
+            
         valores_menu.append("Pasta do Aplicativo (Padrão)")
         for p in self.pastas_local:
             valores_menu.append(p['nome'])
@@ -3071,10 +3266,17 @@ class ImportadorFotosApp(ctk.CTk):
         
         opcao_atual = self.combo_destino_var.get()
         if opcao_atual not in valores_menu:
-            self.combo_destino_var.set("Pasta do Aplicativo (Padrão)")
-            self.destino_path.set(self.destino_padrao_app)
+            if self.active_servir and self.active_servir.get('local_path'):
+                local_nome = self.active_servir.get('local_nome') or os.path.basename(self.active_servir.get('local_path')) or "Pasta do Servir"
+                self.combo_destino_var.set(f"Pasta do Servir: {local_nome}")
+                self.destino_path.set(self.active_servir.get('local_path'))
+            else:
+                self.combo_destino_var.set("Pasta do Aplicativo (Padrão)")
+                self.destino_path.set(self.destino_padrao_app)
         else:
-            if opcao_atual == "Pasta do Aplicativo (Padrão)":
+            if self.active_servir and opcao_atual.startswith("Pasta do Servir:"):
+                self.destino_path.set(self.active_servir.get('local_path'))
+            elif opcao_atual == "Pasta do Aplicativo (Padrão)":
                 self.destino_path.set(self.destino_padrao_app)
             elif opcao_atual != "Escolher pasta personalizada...":
                 for p in self.pastas_local:
@@ -3087,6 +3289,8 @@ class ImportadorFotosApp(ctk.CTk):
             self.selecionar_destino()
         elif opcao == "Pasta do Aplicativo (Padrão)":
             self.destino_path.set(self.destino_padrao_app)
+        elif self.active_servir and opcao.startswith("Pasta do Servir:"):
+            self.destino_path.set(self.active_servir.get('local_path'))
         else:
             for p in self.pastas_local:
                 if p['nome'] == opcao:
