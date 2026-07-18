@@ -1191,8 +1191,18 @@ def mesclar_estatisticas(stats_lider, stats_auxiliares):
             for fotog in cat.get("fotografos", []):
                 f_nome = fotog.get("nome_fotografo")
                 f_total = fotog.get("total_fotos", 0)
+                f_cameras = fotog.get("cameras", [])
+                f_lentes = fotog.get("lentes", [])
                 if f_nome:
-                    mapa_categorias[cat_nome][f_nome] = mapa_categorias[cat_nome].get(f_nome, 0) + f_total
+                    if f_nome not in mapa_categorias[cat_nome]:
+                        mapa_categorias[cat_nome][f_nome] = {
+                            "total_fotos": 0,
+                            "cameras": set(),
+                            "lentes": set()
+                        }
+                    mapa_categorias[cat_nome][f_nome]["total_fotos"] += f_total
+                    mapa_categorias[cat_nome][f_nome]["cameras"].update(f_cameras)
+                    mapa_categorias[cat_nome][f_nome]["lentes"].update(f_lentes)
                     
     adicionar_stats(stats_lider)
     for sa in stats_auxiliares:
@@ -1200,7 +1210,14 @@ def mesclar_estatisticas(stats_lider, stats_auxiliares):
         
     resultado = []
     for cat_nome, fotogs_map in mapa_categorias.items():
-        fotogs_list = [{"nome_fotografo": name, "total_fotos": total} for name, total in fotogs_map.items()]
+        fotogs_list = []
+        for name, data in fotogs_map.items():
+            fotogs_list.append({
+                "nome_fotografo": name,
+                "total_fotos": data["total_fotos"],
+                "cameras": list(data["cameras"]),
+                "lentes": list(data["lentes"])
+            })
         resultado.append({
             "nome": cat_nome,
             "fotografos": fotogs_list
@@ -1504,6 +1521,58 @@ class ImportadorFotosApp(ctk.CTk):
         messagebox.showinfo("Servir Finalizado", "O computador Líder finalizou o Dia de Servir.\nSua estação foi desconectada automaticamente.")
         self.mostrar_pagina_inicial()
 
+    def extrair_camera_e_lente(self, caminho_arquivo):
+        camera = "Desconhecida"
+        lente = "Desconhecida"
+        
+        ext = caminho_arquivo.lower()
+        if ext.endswith(('.mp4', '.mov', '.avi', '.wav')):
+            return camera, lente
+            
+        try:
+            with Image.open(caminho_arquivo) as img:
+                exif = img.getexif()
+                if exif:
+                    make = exif.get(271)
+                    model = exif.get(272)
+                    
+                    if model:
+                        model = str(model).strip()
+                        if make and str(make).strip() not in model:
+                            camera = f"{str(make).strip()} {model}"
+                        else:
+                            camera = model
+                    elif make:
+                        camera = str(make).strip()
+                    
+                    try:
+                        exif_ifd = exif.get_ifd(34665)
+                        if exif_ifd:
+                            lens_make = exif_ifd.get(42035)
+                            lens_model = exif_ifd.get(42036)
+                            if lens_model:
+                                lens_model = str(lens_model).strip()
+                                if lens_make and str(lens_make).strip() not in lens_model:
+                                    lente = f"{str(lens_make).strip()} {lens_model}"
+                                else:
+                                    lente = lens_model
+                            elif lens_make:
+                                lente = str(lens_make).strip()
+                    except Exception:
+                        pass
+                        
+                    if lente == "Desconhecida":
+                        from PIL.ExifTags import TAGS
+                        for tag_id, val in exif.items():
+                            tag_name = TAGS.get(tag_id, tag_id)
+                            if tag_name in ('LensModel', 'LensName'):
+                                lente = str(val).strip()
+                                break
+        except Exception:
+            pass
+            
+        return camera, lente
+
     def obter_estatisticas_locais(self):
         if not self.active_servir:
             return []
@@ -1525,14 +1594,26 @@ class ImportadorFotosApp(ctk.CTk):
                             fotografo_dir_nome = subitem
                             
                             total_fotos = 0
+                            cameras_usadas = set()
+                            lentes_usadas = set()
+                            
                             for root, _, files in os.walk(caminho_subitem):
                                 for file_name in files:
                                     if file_name.lower().endswith(('.png', '.jpg', '.jpeg', '.cr2', '.nef', '.arw', '.cr3', '.mp4')):
                                         total_fotos += 1
+                                        if file_name.lower().endswith(('.jpg', '.jpeg', '.png', '.cr2', '.nef', '.arw', '.cr3')):
+                                            caminho_foto = os.path.join(root, file_name)
+                                            cam, len_ = self.extrair_camera_e_lente(caminho_foto)
+                                            if cam and cam != "Desconhecida":
+                                                cameras_usadas.add(cam)
+                                            if len_ and len_ != "Desconhecida":
+                                                lentes_usadas.add(len_)
                             
                             categorias_detectadas[categoria_nome].append({
                                 "nome_fotografo": fotografo_dir_nome,
-                                "total_fotos": total_fotos
+                                "total_fotos": total_fotos,
+                                "cameras": list(cameras_usadas),
+                                "lentes": list(lentes_usadas)
                             })
         
         lista_categorias = []
@@ -3227,14 +3308,141 @@ class ImportadorFotosApp(ctk.CTk):
                 
         os.makedirs(destino, exist_ok=True)
         arquivos_para_copiar = []
+        ja_descarregados = 0
+        total_encontrados = 0
         
         for pasta_relativa in pastas_selecionadas:
             pasta_origem = os.path.join(self.drive_path, os.path.normpath(pasta_relativa))
             if os.path.exists(pasta_origem):
+                arquivos_por_diretorio = {}
                 for root, dirs, files in os.walk(pasta_origem):
                     for file in files:
                         if file.lower().endswith(('.png', '.jpg', '.jpeg', '.cr2', '.nef', '.arw', '.cr3', '.mp4')):
-                            arquivos_para_copiar.append(os.path.join(root, file))
+                            if file != "FOTOS_DESCARREGADAS_ATE_AQUI.txt":
+                                arquivos_por_diretorio.setdefault(root, []).append(file)
+                                
+                for subdir, files in arquivos_por_diretorio.items():
+                    total_encontrados += len(files)
+                    try:
+                        files.sort(key=lambda f: os.path.getmtime(os.path.join(subdir, f)))
+                    except Exception:
+                        files.sort()
+                        
+                    marker_path = os.path.join(subdir, "FOTOS_DESCARREGADAS_ATE_AQUI.txt")
+                    if os.path.exists(marker_path):
+                        last_file_name = None
+                        last_file_mtime = None
+                        try:
+                            with open(marker_path, 'r', encoding='utf-8') as f:
+                                for line in f:
+                                    if line.startswith("Último arquivo importado:"):
+                                        last_file_name = line.split(":", 1)[1].strip()
+                                    elif line.startswith("Timestamp do último arquivo:"):
+                                        last_file_mtime = float(line.split(":", 1)[1].strip())
+                        except Exception as e:
+                            print(f"Erro ao ler marker file em {subdir}: {e}")
+                            
+                        if last_file_mtime is None:
+                            try:
+                                last_file_mtime = os.path.getmtime(marker_path)
+                            except Exception:
+                                pass
+                                
+                        filtered_files = []
+                        if last_file_name and last_file_name in files:
+                            idx = files.index(last_file_name)
+                            ja_descarregados += (idx + 1)
+                            for f in files[idx+1:]:
+                                filtered_files.append(os.path.join(subdir, f))
+                        else:
+                            for f in files:
+                                f_path = os.path.join(subdir, f)
+                                try:
+                                    f_mtime = os.path.getmtime(f_path)
+                                except Exception:
+                                    f_mtime = 0
+                                if last_file_mtime is not None and f_mtime > last_file_mtime:
+                                    filtered_files.append(f_path)
+                                elif last_file_mtime is None:
+                                    filtered_files.append(f_path)
+                                else:
+                                    ja_descarregados += 1
+                        arquivos_para_copiar.extend(filtered_files)
+                    else:
+                        for f in files:
+                            arquivos_para_copiar.append(os.path.join(subdir, f))
+                            
+        if total_encontrados == 0:
+            self.after(0, lambda: messagebox.showinfo("Informação", "Nenhuma imagem encontrada nas pastas selecionadas."))
+            self.after(0, lambda: self.btn_iniciar.configure(state="normal"))
+            return
+            
+        if len(arquivos_para_copiar) == 0 and ja_descarregados > 0:
+            confirmar_reimport = [False]
+            event_reimport = threading.Event()
+            
+            def exibir_confirmacao_reimport():
+                res = messagebox.askyesno(
+                    "Fotos Já Descarregadas",
+                    f"Atenção: Todas as {ja_descarregados} fotos encontradas já foram descarregadas anteriormente!\n\n"
+                    "Deseja descarregá-las novamente?"
+                )
+                confirmar_reimport[0] = res
+                event_reimport.set()
+                
+            self.after(0, exibir_confirmacao_reimport)
+            event_reimport.wait()
+            
+            if confirmar_reimport[0]:
+                for pasta_relativa in pastas_selecionadas:
+                    pasta_origem = os.path.join(self.drive_path, os.path.normpath(pasta_relativa))
+                    if os.path.exists(pasta_origem):
+                        for root, dirs, files in os.walk(pasta_origem):
+                            for file in files:
+                                if file.lower().endswith(('.png', '.jpg', '.jpeg', '.cr2', '.nef', '.arw', '.cr3', '.mp4')):
+                                    if file != "FOTOS_DESCARREGADAS_ATE_AQUI.txt":
+                                        arquivos_para_copiar.append(os.path.join(root, file))
+            else:
+                def reativar_controles():
+                    self.btn_iniciar.configure(state="normal")
+                    if hasattr(self, 'combo_destino') and self.combo_destino.winfo_exists():
+                        self.combo_destino.configure(state="normal")
+                    if hasattr(self, 'combo_fotografo'):
+                        self.combo_fotografo.configure(state="normal")
+                    if hasattr(self, 'entry_nome_outro'):
+                        self.entry_nome_outro.configure(state="normal")
+                    if hasattr(self, 'combo_categoria'):
+                        self.combo_categoria.configure(state="normal")
+                self.after(0, reativar_controles)
+                return
+                
+        elif len(arquivos_para_copiar) > 0 and ja_descarregados > 0:
+            confirmar_novas = [True]
+            event_novas = threading.Event()
+            
+            def exibir_confirmacao_novas():
+                res = messagebox.askyesno(
+                    "Fotos Já Descarregadas",
+                    f"Atenção: Foram detectadas {ja_descarregados} fotos já descarregadas anteriormente nesta pasta.\n\n"
+                    f"Deseja descarregar apenas as {len(arquivos_para_copiar)} novas fotos tiradas após o último descarregamento?\n"
+                    f"(Se selecionar 'Não', todas as {len(arquivos_para_copiar) + ja_descarregados} fotos serão copiadas)."
+                )
+                confirmar_novas[0] = res
+                event_novas.set()
+                
+            self.after(0, exibir_confirmacao_novas)
+            event_novas.wait()
+            
+            if not confirmar_novas[0]:
+                arquivos_para_copiar = []
+                for pasta_relativa in pastas_selecionadas:
+                    pasta_origem = os.path.join(self.drive_path, os.path.normpath(pasta_relativa))
+                    if os.path.exists(pasta_origem):
+                        for root, dirs, files in os.walk(pasta_origem):
+                            for file in files:
+                                if file.lower().endswith(('.png', '.jpg', '.jpeg', '.cr2', '.nef', '.arw', '.cr3', '.mp4')):
+                                    if file != "FOTOS_DESCARREGADAS_ATE_AQUI.txt":
+                                        arquivos_para_copiar.append(os.path.join(root, file))
 
         total_arquivos = len(arquivos_para_copiar)
         if total_arquivos == 0:
@@ -3302,6 +3510,9 @@ class ImportadorFotosApp(ctk.CTk):
 
         progresso_atual = 0
         lock = threading.Lock()
+        
+        copiados_com_sucesso = []
+        lock_copiados = threading.Lock()
 
         def processar_arquivo(item):
             nonlocal progresso_atual
@@ -3325,6 +3536,8 @@ class ImportadorFotosApp(ctk.CTk):
                 with lock:
                     if caminho_destino.lower().endswith(('.png', '.jpg', '.jpeg', '.cr2', '.nef', '.arw', '.cr3')):
                         self.arquivos_transferidos.append(caminho_destino)
+                with lock_copiados:
+                    copiados_com_sucesso.append(caminho_arquivo)
             except Exception as e:
                 print(f"Erro ao processar {nome_original}: {e}")
             
@@ -3337,6 +3550,47 @@ class ImportadorFotosApp(ctk.CTk):
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
             executor.map(processar_arquivo, enumerate(arquivos_para_copiar))
+
+        # Cria arquivos de marcador no cartão para os diretórios de origem que foram copiados com sucesso
+        if copiados_com_sucesso:
+            copiados_por_dir = {}
+            for path in copiados_com_sucesso:
+                dir_name = os.path.dirname(path)
+                copiados_por_dir.setdefault(dir_name, []).append(path)
+                
+            for subdir, paths in copiados_por_dir.items():
+                if not paths:
+                    continue
+                try:
+                    paths.sort(key=lambda x: os.path.getmtime(x))
+                except Exception:
+                    paths.sort()
+                
+                ultimo_arquivo_path = paths[-1]
+                ultimo_arquivo_nome = os.path.basename(ultimo_arquivo_path)
+                try:
+                    ultimo_mtime = os.path.getmtime(ultimo_arquivo_path)
+                except Exception:
+                    ultimo_mtime = time.time()
+                
+                marker_path = os.path.join(subdir, "FOTOS_DESCARREGADAS_ATE_AQUI.txt")
+                try:
+                    agora_str = time.strftime("%d/%m/%Y %H:%M:%S")
+                    with open(marker_path, 'w', encoding='utf-8') as f_marker:
+                        f_marker.write("=====================================================\n")
+                        f_marker.write(" FOTOS DESCARREGADAS ATÉ ESTE PONTO\n")
+                        f_marker.write("=====================================================\n")
+                        f_marker.write("Este arquivo indica que as fotos anteriores a ele\n")
+                        f_marker.write("já foram importadas para o computador.\n\n")
+                        f_marker.write(f"Último arquivo importado: {ultimo_arquivo_nome}\n")
+                        f_marker.write(f"Data do descarregamento: {agora_str}\n")
+                        f_marker.write(f"Timestamp do último arquivo: {ultimo_mtime}\n")
+                        f_marker.write("=====================================================\n")
+                    
+                    # Define a data de modificação do arquivo marcador para ser 1 segundo após a última foto copiada
+                    os.utime(marker_path, (ultimo_mtime + 1.0, ultimo_mtime + 1.0))
+                except Exception as e:
+                    print(f"Erro ao criar marker file em {subdir}: {e}")
 
         self.after(0, self.finalizar_transferencia_gui)
 
