@@ -3410,21 +3410,8 @@ class ImportadorFotosApp(ctk.CTk):
             )
             self.combo_categoria.pack(pady=(0, 4), padx=30, fill="x")
 
-        # 6. PASTA DE DESTINO NO COMPUTADOR
+        # 6. PASTA DE DESTINO NO COMPUTADOR (Definida automaticamente pela categoria/evento)
         self.destino_path.set(self.destino_padrao_app)
-        
-        lbl_destino = ctk.CTkLabel(self.container_principal, text="Pasta de Destino no Computador:", font=ctk.CTkFont(weight="bold"))
-        lbl_destino.pack(anchor="w", padx=30, pady=(4, 2))
-        
-        self.combo_destino_var = ctk.StringVar(value="Pasta do Aplicativo (Padrão)")
-        self.combo_destino = ctk.CTkOptionMenu(
-            self.container_principal,
-            values=["Pasta do Aplicativo (Padrão)"],
-            variable=self.combo_destino_var,
-            command=self.ao_alterar_destino_combo,
-            height=28
-        )
-        self.combo_destino.pack(pady=(0, 4), padx=30, fill="x")
         self.recarregar_combo_destino()
 
 
