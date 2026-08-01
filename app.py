@@ -34,7 +34,7 @@ except ImportError:
 
 # Configurações de tema do CustomTkinter
 ctk.set_appearance_mode("Dark")
-ctk.set_default_color_theme("blue")
+ctk.set_default_color_theme("green")
 
 class RevisorFotosWindow(ctk.CTkToplevel):
     def __init__(self, parent, arquivos, pasta_destino):
@@ -2345,8 +2345,9 @@ class ImportadorFotosApp(ctk.CTk):
         
         lbl_titulo = ctk.CTkLabel(
             frame_header, 
-            text="📸 Descarregador de Fotos - Painel Inicial", 
-            font=ctk.CTkFont(size=22, weight="bold")
+            text="📸 Descarregador de Fotos - Painel Inicial 🟢 (v1.0.2 VERDE)", 
+            font=ctk.CTkFont(size=22, weight="bold"),
+            text_color="#2ecc71"
         )
         lbl_titulo.grid(row=0, column=0, sticky="w")
         
