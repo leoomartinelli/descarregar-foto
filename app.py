@@ -631,6 +631,481 @@ class HistoricoDadosWindow(ctk.CTkToplevel):
         self.destroy()
 
 
+class GoogleAuthWindow(ctk.CTkToplevel):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.parent = parent
+        self.title("Credenciais e Login do Google Drive")
+        self.geometry("700x750")
+        self.minsize(650, 700)
+        
+        # Foco e grab_set seguro
+        self.focus_force()
+        self.after(100, lambda: self.grab_set() if self.winfo_exists() else None)
+        
+        self.dir_atual = os.path.dirname(os.path.abspath(__file__))
+        self.caminho_credenciais = os.path.join(self.dir_atual, "credentials.json")
+        self.caminho_token = os.path.join(self.dir_atual, "token.json")
+        self.caminho_env = os.path.join(self.dir_atual, ".env")
+        
+        self.is_authenticating = False
+        self.mostrar_secret = False
+        
+        self.setup_ui()
+        self.atualizar_status_ui()
+
+    def setup_ui(self):
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_columnconfigure(0, weight=1)
+        
+        # Frame Principal com Scroll
+        self.main_frame = ctk.CTkScrollableFrame(self, fg_color="#181818")
+        self.main_frame.grid(row=0, column=0, sticky="nsew", padx=15, pady=15)
+        self.main_frame.grid_columnconfigure(0, weight=1)
+        
+        # Cabeçalho
+        lbl_titulo = ctk.CTkLabel(
+            self.main_frame,
+            text="🔑 Autenticação e Credenciais do Google Drive",
+            font=ctk.CTkFont(size=18, weight="bold"),
+            text_color="#3498db"
+        )
+        lbl_titulo.pack(anchor="w", padx=15, pady=(15, 5))
+        
+        lbl_sub = ctk.CTkLabel(
+            self.main_frame,
+            text="Gerencie as credenciais da sua aplicação no Google Cloud e realize o login OAuth para enviar fotos.",
+            font=ctk.CTkFont(size=12),
+            text_color="gray",
+            wraplength=620,
+            justify="left"
+        )
+        lbl_sub.pack(anchor="w", padx=15, pady=(0, 15))
+        
+        # --- CARD 1: PAINEL DE STATUS ---
+        frame_status = ctk.CTkFrame(self.main_frame, fg_color="#242424", corner_radius=10)
+        frame_status.pack(fill="x", padx=15, pady=10)
+        frame_status.grid_columnconfigure(1, weight=1)
+        
+        lbl_st_head = ctk.CTkLabel(frame_status, text="Status Atual", font=ctk.CTkFont(size=14, weight="bold"))
+        lbl_st_head.grid(row=0, column=0, columnspan=2, sticky="w", padx=15, pady=(10, 5))
+        
+        # Credenciais
+        ctk.CTkLabel(frame_status, text="Arquivo de Credenciais:", font=ctk.CTkFont(size=12, weight="bold")).grid(row=1, column=0, sticky="w", padx=15, pady=4)
+        self.lbl_status_cred = ctk.CTkLabel(frame_status, text="Verificando...", font=ctk.CTkFont(size=12))
+        self.lbl_status_cred.grid(row=1, column=1, sticky="w", padx=10, pady=4)
+        
+        # Token / Login
+        ctk.CTkLabel(frame_status, text="Sessão / Token de Acesso:", font=ctk.CTkFont(size=12, weight="bold")).grid(row=2, column=0, sticky="w", padx=15, pady=4)
+        self.lbl_status_token = ctk.CTkLabel(frame_status, text="Verificando...", font=ctk.CTkFont(size=12))
+        self.lbl_status_token.grid(row=2, column=1, sticky="w", padx=10, pady=4)
+
+        # Conta Conectada
+        ctk.CTkLabel(frame_status, text="Conta do Google:", font=ctk.CTkFont(size=12, weight="bold")).grid(row=3, column=0, sticky="w", padx=15, pady=(4, 12))
+        self.lbl_status_conta = ctk.CTkLabel(frame_status, text="-", font=ctk.CTkFont(size=12))
+        self.lbl_status_conta.grid(row=3, column=1, sticky="w", padx=10, pady=(4, 12))
+        
+        # --- CARD 2: LOGIN DO GOOGLE & GERAR TOKEN ---
+        frame_login = ctk.CTkFrame(self.main_frame, fg_color="#242424", corner_radius=10)
+        frame_login.pack(fill="x", padx=15, pady=10)
+        
+        lbl_login_head = ctk.CTkLabel(frame_login, text="1. Autenticar Conta do Google (Gerar Token)", font=ctk.CTkFont(size=14, weight="bold"))
+        lbl_login_head.pack(anchor="w", padx=15, pady=(10, 5))
+        
+        lbl_login_info = ctk.CTkLabel(
+            frame_login,
+            text="Para autorizar o envio das fotos, clique abaixo. Uma janela no seu navegador será aberta para você fazer login com sua conta do Google.",
+            font=ctk.CTkFont(size=11),
+            text_color="gray",
+            wraplength=600,
+            justify="left"
+        )
+        lbl_login_info.pack(anchor="w", padx=15, pady=(0, 10))
+        
+        frame_botoes_login = ctk.CTkFrame(frame_login, fg_color="transparent")
+        frame_botoes_login.pack(fill="x", padx=15, pady=(0, 10))
+        
+        self.btn_fazer_login = ctk.CTkButton(
+            frame_botoes_login,
+            text="🔑 Fazer Login no Google (Gerar Token)",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            fg_color="#2ecc71",
+            hover_color="#27ae60",
+            height=38,
+            command=self.iniciar_login_google
+        )
+        self.btn_fazer_login.pack(side="left", padx=(0, 10), fill="x", expand=True)
+        
+        self.btn_testar_conexao = ctk.CTkButton(
+            frame_botoes_login,
+            text="🧪 Testar Conexão",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            fg_color="#1f538d",
+            hover_color="#14375e",
+            height=38,
+            command=self.testar_conexao_drive
+        )
+        self.btn_testar_conexao.pack(side="left", padx=5)
+        
+        self.btn_logout = ctk.CTkButton(
+            frame_botoes_login,
+            text="🔴 Desconectar",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            fg_color="#e74c3c",
+            hover_color="#c0392b",
+            height=38,
+            command=self.remover_token
+        )
+        self.btn_logout.pack(side="left", padx=(5, 0))
+        
+        self.lbl_progresso_login = ctk.CTkLabel(frame_login, text="", font=ctk.CTkFont(size=11, weight="bold"), text_color="#f1c40f")
+        self.lbl_progresso_login.pack(anchor="w", padx=15, pady=(0, 10))
+        
+        # --- CARD 3: CONFIGURAR CREDENCIAIS (CLIENT ID & CLIENT SECRET) ---
+        frame_cred = ctk.CTkFrame(self.main_frame, fg_color="#242424", corner_radius=10)
+        frame_cred.pack(fill="x", padx=15, pady=10)
+        
+        lbl_cred_head = ctk.CTkLabel(frame_cred, text="2. Configurar Credenciais OAuth (credentials.json / .env)", font=ctk.CTkFont(size=14, weight="bold"))
+        lbl_cred_head.pack(anchor="w", padx=15, pady=(10, 5))
+        
+        lbl_cred_desc = ctk.CTkLabel(
+            frame_cred,
+            text="Informe o Client ID e Client Secret da sua aplicação no Google Cloud, ou importe diretamente um arquivo credentials.json.",
+            font=ctk.CTkFont(size=11),
+            text_color="gray",
+            wraplength=600,
+            justify="left"
+        )
+        lbl_cred_desc.pack(anchor="w", padx=15, pady=(0, 10))
+        
+        # Botão para importar JSON
+        self.btn_importar_json = ctk.CTkButton(
+            frame_cred,
+            text="📂 Importar arquivo credentials.json baixado...",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            fg_color="#34495e",
+            hover_color="#2c3e50",
+            command=self.importar_arquivo_json
+        )
+        self.btn_importar_json.pack(anchor="w", padx=15, pady=(0, 15))
+        
+        # Separador visual
+        lbl_ou = ctk.CTkLabel(frame_cred, text="────────────── OU INFORME OS DADOS ABAIXO ──────────────", font=ctk.CTkFont(size=10, weight="bold"), text_color="#7f8c8d")
+        lbl_ou.pack(fill="x", padx=15, pady=(0, 10))
+        
+        # Client ID
+        lbl_cid = ctk.CTkLabel(frame_cred, text="Client ID:", font=ctk.CTkFont(size=12, weight="bold"))
+        lbl_cid.pack(anchor="w", padx=15, pady=(5, 2))
+        
+        self.entry_client_id = ctk.CTkEntry(
+            frame_cred,
+            placeholder_text="exemplo: 728998528132-...apps.googleusercontent.com",
+            height=32
+        )
+        self.entry_client_id.pack(fill="x", padx=15, pady=(0, 8))
+        
+        # Client Secret
+        lbl_csecret = ctk.CTkLabel(frame_cred, text="Client Secret:", font=ctk.CTkFont(size=12, weight="bold"))
+        lbl_csecret.pack(anchor="w", padx=15, pady=(5, 2))
+        
+        self.entry_client_secret = ctk.CTkEntry(
+            frame_cred,
+            placeholder_text="exemplo: GOCSPX-...",
+            show="*",
+            height=32
+        )
+        self.entry_client_secret.pack(fill="x", padx=15, pady=(0, 12))
+        
+        frame_botoes_cred = ctk.CTkFrame(frame_cred, fg_color="transparent")
+        frame_botoes_cred.pack(fill="x", padx=15, pady=(0, 15))
+        
+        self.btn_mostrar_secret = ctk.CTkButton(
+            frame_botoes_cred,
+            text="👁️ Exibir Secret",
+            width=140,
+            fg_color="#444",
+            hover_color="#555",
+            command=self.toggle_mostrar_secret
+        )
+        self.btn_mostrar_secret.pack(side="left", padx=(0, 10))
+        
+        self.btn_salvar_cred = ctk.CTkButton(
+            frame_botoes_cred,
+            text="💾 Salvar Credenciais Manuais",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            fg_color="#2980b9",
+            hover_color="#1c5980",
+            command=self.salvar_credenciais_manuais
+        )
+        self.btn_salvar_cred.pack(side="right")
+
+        # Botão Fechar
+        btn_fechar = ctk.CTkButton(
+            self.main_frame,
+            text="Salvar e Fechar",
+            height=36,
+            font=ctk.CTkFont(weight="bold"),
+            fg_color="#444",
+            hover_color="#555",
+            command=self.fechar_janela
+        )
+        btn_fechar.pack(fill="x", padx=15, pady=(10, 10))
+
+    def toggle_mostrar_secret(self):
+        self.mostrar_secret = not self.mostrar_secret
+        if self.mostrar_secret:
+            self.entry_client_secret.configure(show="")
+            self.btn_mostrar_secret.configure(text="🙈 Ocultar Secret")
+        else:
+            self.entry_client_secret.configure(show="*")
+            self.btn_mostrar_secret.configure(text="👁️ Exibir Secret")
+
+    def atualizar_status_ui(self):
+        # 1. Verifica credentials.json / .env
+        client_id = ""
+        client_secret = ""
+        cred_ok = False
+        
+        if os.path.exists(self.caminho_credenciais):
+            try:
+                with open(self.caminho_credenciais, 'r', encoding='utf-8') as f:
+                    dados = json.load(f)
+                    installed = dados.get("installed", {}) or dados.get("web", {})
+                    client_id = installed.get("client_id", "")
+                    client_secret = installed.get("client_secret", "")
+                    if client_id and client_secret:
+                        cred_ok = True
+            except Exception:
+                pass
+                
+        if cred_ok:
+            cid_curto = client_id[:25] + "..." if len(client_id) > 25 else client_id
+            self.lbl_status_cred.configure(text=f"✅ Encontrado ({cid_curto})", text_color="#2ecc71")
+        else:
+            self.lbl_status_cred.configure(text="❌ Não configurado (credentials.json ausente)", text_color="#e74c3c")
+
+        # Preenche os campos se estiverem vazios
+        if client_id and not self.entry_client_id.get():
+            self.entry_client_id.insert(0, client_id)
+        if client_secret and not self.entry_client_secret.get():
+            self.entry_client_secret.insert(0, client_secret)
+
+        # 2. Verifica token.json
+        if not GOOGLE_DRIVE_DISPONIVEL:
+            self.lbl_status_token.configure(text="❌ Dependências do Google Drive não instaladas", text_color="#e74c3c")
+            self.lbl_status_conta.configure(text="-", text_color="gray")
+            return
+
+        token_ok = False
+        SCOPES = ['https://www.googleapis.com/auth/drive']
+        if os.path.exists(self.caminho_token):
+            try:
+                creds = Credentials.from_authorized_user_file(self.caminho_token, SCOPES)
+                if creds and creds.valid:
+                    token_ok = True
+                    self.lbl_status_token.configure(text="✅ Sessão Ativa (token.json válido)", text_color="#2ecc71")
+                elif creds and creds.expired and creds.refresh_token:
+                    self.lbl_status_token.configure(text="⚠️ Token Expirado (Será renovado no uso)", text_color="#f39c12")
+                else:
+                    self.lbl_status_token.configure(text="❌ Token Inválido / Expirado", text_color="#e74c3c")
+            except Exception as e:
+                self.lbl_status_token.configure(text=f"❌ Erro ao ler token.json: {e}", text_color="#e74c3c")
+        else:
+            self.lbl_status_token.configure(text="❌ Não Logado (token.json não existe)", text_color="#e74c3c")
+
+        if not token_ok:
+            self.lbl_status_conta.configure(text="Nenhuma conta autenticada", text_color="gray")
+
+    def salvar_credenciais_manuais(self):
+        client_id = self.entry_client_id.get().strip()
+        client_secret = self.entry_client_secret.get().strip()
+        
+        if not client_id or not client_secret:
+            messagebox.showwarning("Aviso", "Por favor, preencha tanto o Client ID quanto o Client Secret!")
+            return
+            
+        dados_cred = {
+            "installed": {
+                "client_id": client_id,
+                "project_id": "descarregar-foto",
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "token_uri": "https://oauth2.googleapis.com/token",
+                "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+                "client_secret": client_secret,
+                "redirect_uris": ["http://localhost"]
+            }
+        }
+        
+        try:
+            with open(self.caminho_credenciais, 'w', encoding='utf-8') as f:
+                json.dump(dados_cred, f, indent=4)
+                
+            # Atualiza também o arquivo .env para manter consistência
+            conteudo_env = f"CLIENT_ID={client_id}\nCLIENT_SECRET={client_secret}\n"
+            with open(self.caminho_env, 'w', encoding='utf-8') as f:
+                f.write(conteudo_env)
+                
+            messagebox.showinfo("Sucesso", "Credenciais salvas com sucesso em 'credentials.json' e '.env'!")
+            self.atualizar_status_ui()
+        except Exception as e:
+            messagebox.showerror("Erro", f"Não foi possível salvar as credenciais: {e}")
+
+    def importar_arquivo_json(self):
+        caminho_selecionado = filedialog.askopenfilename(
+            title="Selecione o arquivo credentials.json baixado do Google Cloud",
+            filetypes=[("Arquivos JSON", "*.json"), ("Todos os Arquivos", "*.*")]
+        )
+        if not caminho_selecionado:
+            return
+            
+        try:
+            with open(caminho_selecionado, 'r', encoding='utf-8') as f:
+                dados = json.load(f)
+                
+            if not isinstance(dados, dict) or ("installed" not in dados and "web" not in dados):
+                messagebox.showerror("Arquivo Inválido", "O arquivo JSON selecionado não é um arquivo válido de credenciais OAuth do Google!")
+                return
+                
+            shutil.copy(caminho_selecionado, self.caminho_credenciais)
+            
+            # Extrai Client ID e Secret se possível para preencher entries
+            installed = dados.get("installed", {}) or dados.get("web", {})
+            cid = installed.get("client_id", "")
+            secret = installed.get("client_secret", "")
+            
+            if cid and secret:
+                self.entry_client_id.delete(0, 'end')
+                self.entry_client_id.insert(0, cid)
+                self.entry_client_secret.delete(0, 'end')
+                self.entry_client_secret.insert(0, secret)
+                
+                # Salva no .env
+                conteudo_env = f"CLIENT_ID={cid}\nCLIENT_SECRET={secret}\n"
+                with open(self.caminho_env, 'w', encoding='utf-8') as f:
+                    f.write(conteudo_env)
+                    
+            messagebox.showinfo("Sucesso", "Arquivo credentials.json importado com sucesso!")
+            self.atualizar_status_ui()
+        except Exception as e:
+            messagebox.showerror("Erro", f"Não foi possível importar o arquivo: {e}")
+
+    def iniciar_login_google(self):
+        if not GOOGLE_DRIVE_DISPONIVEL:
+            messagebox.showerror(
+                "Bibliotecas Faltando", 
+                "As bibliotecas da API do Google não estão instaladas.\n\n"
+                "Execute: pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib"
+            )
+            return
+            
+        if not os.path.exists(self.caminho_credenciais):
+            messagebox.showwarning(
+                "Credenciais Não Encontradas", 
+                "Por favor, configure o Client ID e Client Secret ou importe o arquivo credentials.json antes de realizar o login."
+            )
+            return
+            
+        if self.is_authenticating:
+            return
+            
+        self.is_authenticating = True
+        self.btn_fazer_login.configure(state="disabled", text="Aguardando Login no Navegador...")
+        self.lbl_progresso_login.configure(text="🌐 Uma janela no navegador foi aberta. Faça o login e confirme a autorização...")
+        
+        threading.Thread(target=self._executar_oauth_flow, daemon=True).start()
+
+    def _executar_oauth_flow(self):
+        SCOPES = ['https://www.googleapis.com/auth/drive']
+        try:
+            flow = InstalledAppFlow.from_client_secrets_file(self.caminho_credenciais, SCOPES)
+            creds = flow.run_local_server(port=0)
+            
+            with open(self.caminho_token, 'w', encoding='utf-8') as token_file:
+                token_file.write(creds.to_json())
+                
+            self.after(0, self._login_sucesso)
+        except Exception as e:
+            self.after(0, lambda err=e: self._login_erro(err))
+
+    def _login_sucesso(self):
+        self.is_authenticating = False
+        self.btn_fazer_login.configure(state="normal", text="🔑 Fazer Login no Google (Gerar Token)")
+        self.lbl_progresso_login.configure(text="✅ Autenticação realizada e token.json gerado com sucesso!")
+        messagebox.showinfo("Sucesso", "Login no Google efetuado com sucesso! O arquivo token.json foi gerado.")
+        self.atualizar_status_ui()
+        self.testar_conexao_drive()
+
+    def _login_erro(self, err):
+        self.is_authenticating = False
+        self.btn_fazer_login.configure(state="normal", text="🔑 Fazer Login no Google (Gerar Token)")
+        self.lbl_progresso_login.configure(text="")
+        messagebox.showerror("Erro de Login", f"Não foi possível concluir o login: {err}")
+        self.atualizar_status_ui()
+
+    def testar_conexao_drive(self):
+        if not GOOGLE_DRIVE_DISPONIVEL:
+            messagebox.showerror("Erro", "Bibliotecas do Google Drive não estão disponíveis.")
+            return
+            
+        if not os.path.exists(self.caminho_token):
+            messagebox.showwarning("Aviso", "Você ainda não fez o login no Google. Faça o login primeiro.")
+            return
+            
+        self.lbl_progresso_login.configure(text="🧪 Testando conexão com a API do Google Drive...")
+        
+        def testar():
+            SCOPES = ['https://www.googleapis.com/auth/drive']
+            try:
+                creds = Credentials.from_authorized_user_file(self.caminho_token, SCOPES)
+                if creds and creds.expired and creds.refresh_token:
+                    creds.refresh(Request())
+                    with open(self.caminho_token, 'w', encoding='utf-8') as f:
+                        f.write(creds.to_json())
+                        
+                service = build('drive', 'v3', credentials=creds)
+                about = service.about().get(fields="user").execute()
+                user_info = about.get("user", {})
+                nome_user = user_info.get("displayName", "Usuário")
+                email_user = user_info.get("emailAddress", "Sem e-mail")
+                
+                def sucesso():
+                    self.lbl_status_conta.configure(text=f"👤 {nome_user} ({email_user})", text_color="#2ecc71")
+                    self.lbl_progresso_login.configure(text=f"✅ Conexão bem-sucedida! Logado como {email_user}")
+                    messagebox.showinfo("Conexão OK", f"Conexão com Google Drive estabelecida com sucesso!\n\nConta: {nome_user}\nE-mail: {email_user}")
+                    self.atualizar_status_ui()
+                    
+                self.after(0, sucesso)
+            except Exception as e:
+                def falha(err=e):
+                    self.lbl_status_conta.configure(text="Erro ao carregar conta", text_color="#e74c3c")
+                    self.lbl_progresso_login.configure(text=f"❌ Falha no teste de conexão: {err}")
+                    messagebox.showerror("Erro de Conexão", f"Falha ao conectar com o Google Drive: {err}")
+                    self.atualizar_status_ui()
+                    
+                self.after(0, falha)
+                
+        threading.Thread(target=testar, daemon=True).start()
+
+    def remover_token(self):
+        if not os.path.exists(self.caminho_token):
+            messagebox.showinfo("Informação", "Nenhum arquivo token.json encontrado para remover.")
+            return
+            
+        confirmar = messagebox.askyesno("Confirmar Desconexão", "Deseja realmente desconectar a conta do Google e remover o token.json?")
+        if confirmar:
+            try:
+                os.remove(self.caminho_token)
+                self.lbl_progresso_login.configure(text="Sessão encerrada com sucesso.")
+                messagebox.showinfo("Sucesso", "Conta desconectada e token.json removido com sucesso!")
+                self.atualizar_status_ui()
+            except Exception as e:
+                messagebox.showerror("Erro", f"Não foi possível remover o token.json: {e}")
+
+    def fechar_janela(self):
+        self.grab_release()
+        self.destroy()
+
+
 class ConfiguradorDriveWindow(ctk.CTkToplevel):
     def __init__(self, parent):
         super().__init__(parent)
@@ -683,17 +1158,35 @@ class ConfiguradorDriveWindow(ctk.CTkToplevel):
             messagebox.showerror("Erro", f"Não foi possível salvar as configurações: {e}")
             return False
 
+    def abrir_login_google(self):
+        self.parent.abrir_autenticador_google()
+
     def setup_ui(self):
         self.grid_rowconfigure(1, weight=1)
         self.grid_columnconfigure(0, weight=1)
         
-        # Título
+        # Frame do Título com botão de atalho para login
+        frame_top = ctk.CTkFrame(self, fg_color="transparent")
+        frame_top.grid(row=0, column=0, pady=(15, 5), padx=20, sticky="ew")
+        frame_top.grid_columnconfigure(0, weight=1)
+
         self.lbl_titulo = ctk.CTkLabel(
-            self, 
+            frame_top, 
             text="Configurações do Líder - Pastas Pré-definidas", 
             font=ctk.CTkFont(size=16, weight="bold")
         )
-        self.lbl_titulo.grid(row=0, column=0, pady=(15, 5), padx=20, sticky="w")
+        self.lbl_titulo.grid(row=0, column=0, sticky="w")
+        
+        btn_auth_shortcut = ctk.CTkButton(
+            frame_top,
+            text="🔑 Login / Credenciais Google",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            fg_color="#1f538d",
+            hover_color="#14375e",
+            height=28,
+            command=self.abrir_login_google
+        )
+        btn_auth_shortcut.grid(row=0, column=1, sticky="e")
         
         # Tabview para separar Google Drive e Computador
         self.tabview = ctk.CTkTabview(self)
@@ -1732,6 +2225,9 @@ class ImportadorFotosApp(ctk.CTk):
     def abrir_configurador_drive(self):
         self.janela_config = ConfiguradorDriveWindow(self)
 
+    def abrir_autenticador_google(self):
+        self.janela_auth_google = GoogleAuthWindow(self)
+
     def abrir_historico_dados(self):
         self.janela_dados = HistoricoDadosWindow(self)
 
@@ -1777,6 +2273,17 @@ class ImportadorFotosApp(ctk.CTk):
         frame_botoes = ctk.CTkFrame(frame_header, fg_color="transparent")
         frame_botoes.grid(row=0, column=1, sticky="e")
         
+        btn_auth = ctk.CTkButton(
+            frame_botoes, 
+            text="🔑 Login Google", 
+            fg_color="#1f538d", 
+            hover_color="#14375e",
+            command=self.abrir_autenticador_google,
+            width=110,
+            height=30
+        )
+        btn_auth.pack(side="left", padx=5)
+
         btn_dados = ctk.CTkButton(
             frame_botoes, 
             text="📊 Histórico", 
