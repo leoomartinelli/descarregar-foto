@@ -4815,5 +4815,14 @@ class ImportadorFotosApp(ctk.CTk):
         self.lbl_progresso.configure(text="Progresso: 0%")
 
 if __name__ == "__main__":
+    dir_atual = os.path.dirname(os.path.abspath(__file__))
+    for nome_arquivo in ["HousinhoTitulo.txt", "HousinhoFoto.txt"]:
+        caminho_banner = os.path.join(dir_atual, nome_arquivo)
+        if os.path.exists(caminho_banner):
+            try:
+                with open(caminho_banner, "r", encoding="utf-8") as f:
+                    print(f.read())
+            except Exception:
+                pass
     app = ImportadorFotosApp()
     app.mainloop()
