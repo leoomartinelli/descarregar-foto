@@ -1,6 +1,7 @@
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
 import os
+import sys
 import json
 from datetime import date
 import shutil
@@ -1941,6 +1942,85 @@ class ImportadorFotosApp(ctk.CTk):
         
         self.monitor_thread = threading.Thread(target=self.monitorar_cartao, daemon=True)
         self.monitor_thread.start()
+
+        # Verificação automática de atualizações no Git
+        self.updater_thread = threading.Thread(target=self.verificar_atualizacoes_git, daemon=True)
+        self.updater_thread.start()
+
+    def verificar_atualizacoes_git(self):
+        """Verifica silenciosamente no repositório Git se há novas atualizações e aplica-as se houver."""
+        try:
+            repo_dir = os.path.dirname(os.path.abspath(__file__))
+            git_dir = os.path.join(repo_dir, ".git")
+            if not os.path.exists(git_dir):
+                return
+
+            # Executa git fetch origin main com timeout de 5s
+            res_fetch = subprocess.run(
+                ["git", "fetch", "origin", "main"],
+                cwd=repo_dir,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=5
+            )
+            if res_fetch.returncode != 0:
+                return
+
+            # Hash local
+            res_local = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=repo_dir,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=3
+            )
+            hash_local = res_local.stdout.strip()
+
+            # Hash remota
+            res_remote = subprocess.run(
+                ["git", "rev-parse", "origin/main"],
+                cwd=repo_dir,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=3
+            )
+            hash_remote = res_remote.stdout.strip()
+
+            if hash_local and hash_remote and hash_local != hash_remote:
+                print(f"[AutoUpdate] Nova versão detectada ({hash_local[:7]} -> {hash_remote[:7]}). Atualizando...")
+                res_pull = subprocess.run(
+                    ["git", "pull", "origin", "main"],
+                    cwd=repo_dir,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    timeout=10
+                )
+                if res_pull.returncode == 0:
+                    print("[AutoUpdate] Atualização concluída com sucesso.")
+                    self.after(500, self.notificar_e_reiniciar_apos_atualizacao)
+        except Exception as e:
+            print(f"[AutoUpdate] Verificação de versão ignorada: {e}")
+
+    def notificar_e_reiniciar_apos_atualizacao(self):
+        try:
+            messagebox.showinfo(
+                "Nova Versão Atualizada",
+                "Uma nova versão do aplicativo foi baixada do repositório!\n\n"
+                "O aplicativo será reiniciado agora para aplicar as novidades."
+            )
+        except Exception:
+            pass
+            
+        try:
+            executable = sys.executable
+            args = sys.argv
+            os.execv(executable, [executable] + args)
+        except Exception as e:
+            print(f"Erro ao reiniciar app automaticamente: {e}")
 
     def carregar_config_pastas(self):
         if os.path.exists(self.caminho_config_pastas):
