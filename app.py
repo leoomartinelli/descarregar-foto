@@ -1,4 +1,3 @@
-# Versão 1.0.1 - Sistema com Auto-Updater Git
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
 import os
@@ -34,7 +33,7 @@ except ImportError:
 
 # Configurações de tema do CustomTkinter
 ctk.set_appearance_mode("Dark")
-ctk.set_default_color_theme("green")
+ctk.set_default_color_theme("blue")
 
 class RevisorFotosWindow(ctk.CTkToplevel):
     def __init__(self, parent, arquivos, pasta_destino):
@@ -2345,9 +2344,8 @@ class ImportadorFotosApp(ctk.CTk):
         
         lbl_titulo = ctk.CTkLabel(
             frame_header, 
-            text="📸 Descarregador de Fotos - Painel Inicial 🟢 (v1.0.2 VERDE)", 
-            font=ctk.CTkFont(size=22, weight="bold"),
-            text_color="#2ecc71"
+            text="📸 Descarregador de Fotos - Painel Inicial", 
+            font=ctk.CTkFont(size=22, weight="bold")
         )
         lbl_titulo.grid(row=0, column=0, sticky="w")
         
