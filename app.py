@@ -1,3 +1,4 @@
+# Versão 1.0.1 - Sistema com Auto-Updater Git
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
 import os
