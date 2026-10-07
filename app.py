@@ -4370,6 +4370,11 @@ class ImportadorFotosApp(ctk.CTk):
                 except Exception as e:
                     print(f"Erro ao criar marker file em {subdir}: {e}")
 
+        # As cópias terminam fora de ordem (4 threads); ordena pelo nome (foto_001, foto_002...)
+        # para que a tela de seleção mostre as fotos em sequência.
+        with lock:
+            self.arquivos_transferidos.sort(key=lambda p: os.path.basename(p).lower())
+
         self.after(0, self.finalizar_transferencia_gui)
 
     def finalizar_transferencia_gui(self):
